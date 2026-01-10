@@ -154,6 +154,21 @@ scan_patterns = st.sidebar.button("🔍 Scan Patterns", use_container_width=True
 
 st.sidebar.divider()
 st.sidebar.subheader("📊 Market Phase")
+
+# Lookback Period Presets
+lookback_presets = {
+    "Short-Term (10 bars)": 10,    # ~2 weeks on daily, ~2.5 months on weekly
+    "Mid-Term (26 bars)": 26,      # ~1 month on daily, ~6 months on weekly
+    "Long-Term (52 bars)": 52      # ~2.5 months on daily, ~1 year on weekly
+}
+lookback_selection = st.sidebar.selectbox(
+    "Lookback Period",
+    options=list(lookback_presets.keys()),
+    index=2,  # Default to Long-Term for long-term holding strategy
+    help="How many bars to compare for divergence detection. Longer = fewer but stronger signals."
+)
+lookback_period = lookback_presets[lookback_selection]
+
 analyze_phase = st.sidebar.button("📊 Analyze A/D Phase", use_container_width=True, help="Fetch data and analyze Accumulation/Distribution")
 
 # --- Pattern Scanner Section ---
@@ -200,7 +215,7 @@ if analyze_phase:
         df = fetch_data(symbol, interval)
     
     if not df.empty:
-        phase_msg, phase_color, df = analyze_ad_phase(df)
+        phase_msg, phase_color, df = analyze_ad_phase(df, lookback=lookback_period)
         last = df.iloc[-1]
         
         st.metric(f"{symbol} Price", f"${last['close']:,.2f}", f"{((last['close'] - df.iloc[-2]['close'])/df.iloc[-2]['close'])*100:.2f}%")
