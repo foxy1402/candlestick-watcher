@@ -174,7 +174,7 @@ if scan_patterns:
             fig.add_trace(go.Scatter(x=patterns['timestamp'], y=patterns['high'] * 1.01, mode='markers',
                                      marker=dict(symbol='triangle-down', size=12, color='orange'), name='Pattern', hovertext=patterns['candlestick_pattern']))
         fig.update_layout(height=450, xaxis_rangeslider_visible=False, title=f"{symbol} Candlestick Patterns ({interval})", dragmode='pan')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
         
         # Table
         st.subheader("Recent Patterns")
@@ -245,7 +245,7 @@ if analyze_phase:
             ))
         
         ad_fig.update_layout(title=f"{symbol} Accumulation/Distribution Line ({interval})", height=400, dragmode='pan')
-        st.plotly_chart(ad_fig, use_container_width=True)
+        st.plotly_chart(ad_fig, use_container_width=True, config={'scrollZoom': True})
         
         # Price Chart with phase overlay
         price_fig = go.Figure(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name=symbol))
@@ -269,7 +269,7 @@ if analyze_phase:
             ))
         
         price_fig.update_layout(height=400, xaxis_rangeslider_visible=False, title=f"{symbol} Price with A/D Phases ({interval})", dragmode='pan')
-        st.plotly_chart(price_fig, use_container_width=True)
+        st.plotly_chart(price_fig, use_container_width=True, config={'scrollZoom': True})
         
         with st.expander("View Raw Data"):
             st.dataframe(df, use_container_width=True)
