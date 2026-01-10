@@ -99,12 +99,31 @@ def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
     df['pattern_display'] = df['candlestick_pattern'].str.replace('NO_PATTERN|CDL|_Bull|_Bear', '', regex=True)
     return df
 
-def analyze_ad_phase(df: pd.DataFrame) -> tuple:
-    """Calculate Chaikin A/D and determine market phase."""
+def analyze_ad_phase(df: pd.DataFrame, lookback: int = 20) -> tuple:
+    """Calculate Chaikin A/D and determine market phase with historical phases."""
     df['ad'] = talib.AD(df['high'], df['low'], df['close'], df['volume'])
     df['ad_ema'] = talib.EMA(df['ad'], timeperiod=21)
     
-    recent = df.tail(20)
+    # Calculate rolling price and A/D changes for historical phase detection
+    df['price_change'] = df['close'].diff(lookback)
+    df['ad_change'] = df['ad'].diff(lookback)
+    
+    # Determine phase for each bar
+    # Accumulation: Price down, A/D up (bullish divergence)
+    # Distribution: Price up, A/D down (bearish divergence)
+    # Uptrend: Both up (confirmed)
+    # Downtrend: Both down (confirmed)
+    conditions = [
+        (df['price_change'] < 0) & (df['ad_change'] > 0),  # Accumulation
+        (df['price_change'] > 0) & (df['ad_change'] < 0),  # Distribution
+        (df['ad_change'] > 0),  # Uptrend
+        (df['ad_change'] < 0),  # Downtrend
+    ]
+    choices = ['accumulation', 'distribution', 'uptrend', 'downtrend']
+    df['phase'] = np.select(conditions, choices, default='neutral')
+    
+    # Current phase analysis
+    recent = df.tail(lookback)
     price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
     ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
     
@@ -201,16 +220,55 @@ if analyze_phase:
         else:
             st.error("📉 **Downtrend** — Confirmed by negative money flow")
         
-        # A/D Chart
+        # A/D Chart with phase overlay
         ad_fig = go.Figure()
         ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='Chaikin A/D Line', line=dict(color='orange', width=2)))
         ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', line=dict(color='yellow', dash='dot')))
-        ad_fig.update_layout(title=f"{symbol} Accumulation/Distribution Line ({interval})", height=350)
+        
+        # Add accumulation/distribution phase markers on A/D chart
+        accum_data = df[df['phase'] == 'accumulation']
+        distrib_data = df[df['phase'] == 'distribution']
+        
+        if not accum_data.empty:
+            ad_fig.add_trace(go.Scatter(
+                x=accum_data['timestamp'], y=accum_data['ad'],
+                mode='markers', name='Accumulation',
+                marker=dict(color='lime', size=8, symbol='circle'),
+                hovertemplate='%{x}<br>A/D: %{y:,.0f}<br><b>ACCUMULATION</b><extra></extra>'
+            ))
+        if not distrib_data.empty:
+            ad_fig.add_trace(go.Scatter(
+                x=distrib_data['timestamp'], y=distrib_data['ad'],
+                mode='markers', name='Distribution',
+                marker=dict(color='red', size=8, symbol='circle'),
+                hovertemplate='%{x}<br>A/D: %{y:,.0f}<br><b>DISTRIBUTION</b><extra></extra>'
+            ))
+        
+        ad_fig.update_layout(title=f"{symbol} Accumulation/Distribution Line ({interval})", height=400)
         st.plotly_chart(ad_fig, use_container_width=True)
         
-        # Price Chart for context
+        # Price Chart with phase overlay
         price_fig = go.Figure(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name=symbol))
-        price_fig.update_layout(height=350, xaxis_rangeslider_visible=False, title=f"{symbol} Price ({interval})")
+        
+        # Add accumulation/distribution markers above/below price bars
+        if not accum_data.empty:
+            price_fig.add_trace(go.Scatter(
+                x=accum_data['timestamp'], y=accum_data['low'] * 0.98,
+                mode='markers', name='Accumulation',
+                marker=dict(color='lime', size=10, symbol='triangle-up'),
+                hovertemplate='%{x}<br>Price: $%{customdata:,.2f}<br><b>ACCUMULATION</b><extra></extra>',
+                customdata=accum_data['close']
+            ))
+        if not distrib_data.empty:
+            price_fig.add_trace(go.Scatter(
+                x=distrib_data['timestamp'], y=distrib_data['high'] * 1.02,
+                mode='markers', name='Distribution',
+                marker=dict(color='red', size=10, symbol='triangle-down'),
+                hovertemplate='%{x}<br>Price: $%{customdata:,.2f}<br><b>DISTRIBUTION</b><extra></extra>',
+                customdata=distrib_data['close']
+            ))
+        
+        price_fig.update_layout(height=400, xaxis_rangeslider_visible=False, title=f"{symbol} Price with A/D Phases ({interval})")
         st.plotly_chart(price_fig, use_container_width=True)
         
         with st.expander("View Raw Data"):
