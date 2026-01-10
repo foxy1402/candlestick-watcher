@@ -2,5 +2,5 @@ streamlit
 pandas
 numpy
 plotly
-requests
+yfinance
 ta-lib>=0.4.28
