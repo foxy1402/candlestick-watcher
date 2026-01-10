@@ -3,4 +3,4 @@ pandas
 numpy
 plotly
 requests
-ta-lib-bin
+ta-lib>=0.4.28
