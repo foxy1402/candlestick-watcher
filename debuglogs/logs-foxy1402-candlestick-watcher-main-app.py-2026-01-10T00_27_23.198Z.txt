@@ -1,0 +1,264 @@
+
+[     UTC     ] Logs for goodtrade.streamlit.app/
+────────────────────────────────────────────────────────────────────────────────────────
+[00:09:12] 🚀 Starting up repository: 'candlestick-watcher', branch: 'main', main module: 'app.py'
+[00:09:12] 🐙 Cloning repository...
+[00:09:12] 🐙 Cloning into '/mount/src/candlestick-watcher'...
+
+[00:09:12] 🐙 Cloned repository!
+[00:09:12] 🐙 Pulling code changes from Github...
+[00:09:13] 📦 Processing dependencies...
+[00:09:13] 📦 Apt dependencies were installed from /mount/src/candlestick-watcher/packages.txt using apt-get.
+Hit:1 http://deb.debian.org/debian bookworm InRelease
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
+Get:4 https://packages.microsoft.com/debian/11/prod bullseye InRelease [3650 B]
+Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [290 kB]
+Get:6 https://packages.microsoft.com/debian/11/prod bullseye/main arm64 Packages [64.1 kB]
+Get:7 https://packages.microsoft.com/debian/11/prod bullseye/main amd64 Packages [219 kB]
+Fetched 681 kB in 0s (1362 kB/s)
+Reading package lists...[2026-01-10 00:09:14.454845] 
+Reading package lists...[2026-01-10 00:09:15.099136] 
+Building dependency tree...[2026-01-10 00:09:15.269968] 
+Reading state information...[2026-01-10 00:09:15.270287] 
+E: Unable to locate package ta-lib
+[00:09:15] ❗️ installer returned a non-zero exit code
+[00:09:15] ❗️ Error during processing dependencies! Please fix the error and push an update, or try restarting the app.
+[00:13:57] 🐙 Pulling code changes from Github...
+[00:13:57] 📦 Processing dependencies...
+[00:13:57] 📦 Apt dependencies were installed from /mount/src/candlestick-watcher/packages.txt using apt-get.
+Hit:1 http://deb.debian.org/debian bookworm InRelease
+Hit:2 http://deb.debian.org/debian bookworm-updates InRelease
+Hit:3 http://deb.debian.org/debian-security bookworm-security InRelease
+Hit:4 https://packages.microsoft.com/debian/11/prod bullseye InRelease
+Reading package lists...[2026-01-10 00:13:59.038017] 
+Reading package lists...[2026-01-10 00:13:59.659001] 
+Building dependency tree...[2026-01-10 00:13:59.856856] 
+Reading state information...[2026-01-10 00:13:59.857139] 
+E: Unable to locate package ta-lib
+[00:14:00] ❗️ installer returned a non-zero exit code
+[00:15:03] 🐙 Pulling code changes from Github...
+[00:15:04] 📦 Processing dependencies...
+/home/adminuser/.conda/lib/python3.13/argparse.py:1258: FutureWarning: `remote_definition` is deprecated and will be removed in 25.9. Use `conda env create --file=URL` instead.
+  subnamespace, arg_strings = subparser.parse_known_args(arg_strings, None)
+Retrieving notices: [2026-01-10 00:15:05.503557] - [2026-01-10 00:15:05.603769] \ [2026-01-10 00:15:05.704028] done
+Channels:
+ - conda-forge
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): [2026-01-10 00:15:05.741293] / [2026-01-10 00:15:05.841320] - [2026-01-10 00:15:05.941627] \ [2026-01-10 00:15:06.042231] | [2026-01-10 00:15:06.142368] / [2026-01-10 00:15:06.242533] - [2026-01-10 00:15:06.342658] \ [2026-01-10 00:15:06.443806] | [2026-01-10 00:15:06.560318] / [2026-01-10 00:15:06.660896] - [2026-01-10 00:15:06.760972] \ [2026-01-10 00:15:06.861113] | [2026-01-10 00:15:06.961254] / [2026-01-10 00:15:07.137002] - [2026-01-10 00:15:07.237066] \ [2026-01-10 00:15:07.337142] | [2026-01-10 00:15:07.437274] / [2026-01-10 00:15:07.537344] - [2026-01-10 00:15:07.637482] \ [2026-01-10 00:15:07.737629] | [2026-01-10 00:15:07.837707] / [2026-01-10 00:15:07.937833] - [2026-01-10 00:15:08.037998] \ [2026-01-10 00:15:08.138087] | [2026-01-10 00:15:08.238211] / [2026-01-10 00:15:08.558468] - [2026-01-10 00:15:15.050927] \ [2026-01-10 00:15:19.125269] | [2026-01-10 00:15:20.590449] / [2026-01-10 00:15:21.003962] - [2026-01-10 00:15:21.125173] done
+[00:16:12] 🖥 Provisioning machine...
+[00:16:15] 🚀 Starting up repository: 'candlestick-watcher', branch: 'main', main module: 'app.py'
+[00:16:15] 🐙 Cloning repository...
+[00:16:15] 🐙 Cloning into '/mount/src/candlestick-watcher'...
+
+[00:16:15] 🐙 Cloned repository!
+[00:16:15] 🐙 Pulling code changes from Github...
+[00:16:15] 📦 Processing dependencies...
+/home/adminuser/.conda/lib/python3.13/argparse.py:1258: FutureWarning: `remote_definition` is deprecated and will be removed in 25.9. Use `conda env create --file=URL` instead.
+  subnamespace, arg_strings = subparser.parse_known_args(arg_strings, None)
+[00:16:16] 🎛 Preparing system...
+[00:16:16] ⛓ Spinning up manager process...
+Retrieving notices: - [2026-01-10 00:16:17.435103] done
+Channels:
+ - conda-forge
+ - defaults
+Platform: linux-64
+Solving environment: / [2026-01-10 00:17:55.496218] - [2026-01-10 00:18:04.080156] \ [2026-01-10 00:18:12.442931] | [2026-01-10 00:19:19.597247] / [2026-01-10 00:19:21.995172] - [2026-01-10 00:20:59.821597] \ [2026-01-10 00:21:07.988958] | [2026-01-10 00:21:16.072776] / [2026-01-10 00:22:20.507236] - [2026-01-10 00:22:23.025648] \ [2026-01-10 00:22:25.373221] | [2026-01-10 00:23:48.081981] / [2026-01-10 00:23:56.452037] - [2026-01-10 00:24:04.619038] \ 
+[00:26:17] 🚀 Starting up repository: 'candlestick-watcher', branch: 'main', main module: 'app.py'
+[00:26:17] 🐙 Cloning repository...
+[00:26:18] 🐙 Cloning into '/mount/src/candlestick-watcher'...
+
+[00:26:18] 🐙 Cloned repository!
+[00:26:18] 🐙 Pulling code changes from Github...
+[00:26:18] 📦 Processing dependencies...
+
+──────────────────────────────────────── uv ───────────────────────────────────────────
+
+Using uv pip install.
+Using Python 3.13.11 environment at /home/adminuser/venv
+  × No solution found when resolving dependencies:
+  ╰─▶ Because ta-lib-bin==0.4.26 has no wheels with a matching Python
+      implementation tag and only ta-lib-bin==0.4.26 is available, we can
+      conclude that all versions of ta-lib-bin cannot be used.
+      And because you require ta-lib-bin, we can conclude that your
+      requirements are unsatisfiable.
+Checking if Streamlit is installed
+Installing rich for an improved exception logging
+Using uv pip install.
+Using Python 3.13.11 environment at /home/adminuser/venv
+Resolved 4 packages in 129ms
+Prepared 4 packages in 106ms
+Installed 4 packages in 19ms
+ + markdown-it-py==4.0.0[2026-01-10 00:26:19.361694] 
+ + mdurl==0.1.2
+ + pygments==2.19.2
+ + rich==14.2.0
+
+────────────────────────────────────────────────────────────────────────────────────────
+
+
+──────────────────────────────────────── pip ───────────────────────────────────────────
+
+Using standard pip install.
+Collecting streamlit (from -r /mount/src/candlestick-watcher/requirements.txt (line 1))
+  Downloading streamlit-1.52.2-py3-none-any.whl.metadata (9.8 kB)
+Collecting pandas (from -r /mount/src/candlestick-watcher/requirements.txt (line 2))
+  Downloading pandas-2.3.3-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (91 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 91.2/91.2 kB 4.4 MB/s eta 0:00:00[2026-01-10 00:26:21.042096] 
+Collecting numpy (from -r /mount/src/candlestick-watcher/requirements.txt (line 3))
+  Downloading numpy-2.4.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (6.6 kB)
+Collecting plotly (from -r /mount/src/candlestick-watcher/requirements.txt (line 4))
+  Downloading plotly-6.5.1-py3-none-any.whl.metadata (8.5 kB)
+Collecting requests (from -r /mount/src/candlestick-watcher/requirements.txt (line 5))
+  Downloading requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+ERROR: Ignored the following versions that require a different python version: 0.55.2 Requires-Python <3.5; 1.21.2 Requires-Python >=3.7,<3.11; 1.21.3 Requires-Python >=3.7,<3.11; 1.21.4 Requires-Python >=3.7,<3.11; 1.21.5 Requires-Python >=3.7,<3.11; 1.21.6 Requires-Python >=3.7,<3.11; 1.26.0 Requires-Python <3.13,>=3.9; 1.26.1 Requires-Python <3.13,>=3.9
+ERROR: Could not find a version that satisfies the requirement ta-lib-bin (from versions: none)
+ERROR: No matching distribution found for ta-lib-bin
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: pip install --upgrade pip
+Checking if Streamlit is installed
+Installing rich for an improved exception logging
+Using standard pip install.
+Collecting rich>=10.14.0
+  Downloading rich-14.2.0-py3-none-any.whl.metadata (18 kB)
+Collecting markdown-it-py>=2.2.0 (from rich>=10.14.0)
+  Downloading markdown_it_py-4.0.0-py3-none-any.whl.metadata (7.3 kB)
+Collecting pygments<3.0.0,>=2.13.0 (from rich>=10.14.0)
+  Downloading pygments-2.19.2-py3-none-any.whl.metadata (2.5 kB)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=10.14.0)
+  Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Downloading rich-14.2.0-py3-none-any.whl (243 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 243.4/243.4 kB 16.0 MB/s eta 0:00:00[2026-01-10 00:26:22.860317] 
+Downloading markdown_it_py-4.0.0-py3-none-any.whl (87 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.3/87.3 kB 142.2 MB/s eta 0:00:00[2026-01-10 00:26:22.873346] 
+Downloading pygments-2.19.2-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 84.1 MB/s eta 0:00:00[2026-01-10 00:26:22.900459] 
+Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Installing collected packages: pygments, mdurl, markdown-it-py, rich
+  Attempting uninstall: pygments
+    Found existing installation: Pygments 2.19.2
+    Uninstalling Pygments-2.19.2:
+      Successfully uninstalled Pygments-2.19.2
+  Attempting uninstall: mdurl
+    Found existing installation: mdurl 0.1.2
+    Uninstalling mdurl-0.1.2:
+      Successfully uninstalled mdurl-0.1.2
+  Attempting uninstall: markdown-it-py
+    Found existing installation: markdown-it-py 4.0.0
+    Uninstalling markdown-it-py-4.0.0:
+      Successfully uninstalled markdown-it-py-4.0.0
+  Attempting uninstall: rich
+    Found existing installation: rich 14.2.0
+    Uninstalling rich-14.2.0:
+      Successfully uninstalled rich-14.2.0
+Successfully installed markdown-it-py-4.0.0 mdurl-0.1.2 pygments-2.19.2 rich-14.2.0
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: pip install --upgrade pip
+
+────────────────────────────────────────────────────────────────────────────────────────
+
+[00:26:24] ❗️ installer returned a non-zero exit code
+[00:26:24] ❗️ Error during processing dependencies! Please fix the error and push an update, or try restarting the app.
+[00:27:04] 🖥 Provisioning machine...
+[00:27:09] 🎛 Preparing system...
+[00:27:08] 🚀 Starting up repository: 'candlestick-watcher', branch: 'main', main module: 'app.py'
+[00:27:08] 🐙 Cloning repository...
+[00:27:08] 🐙 Cloning into '/mount/src/candlestick-watcher'...
+
+[00:27:08] 🐙 Cloned repository!
+[00:27:08] 🐙 Pulling code changes from Github...
+[00:27:09] 📦 Processing dependencies...
+
+──────────────────────────────────────── uv ───────────────────────────────────────────
+
+Using uv pip install.
+Using Python 3.13.11 environment at /home/adminuser/venv
+  × No solution found when resolving dependencies:
+  ╰─▶ Because ta-lib-bin==0.4.26 has no wheels with a matching Python
+      implementation tag and only ta-lib-bin==0.4.26 is available, we can
+      conclude that all versions of ta-lib-bin cannot be used.
+      And because you require ta-lib-bin, we can conclude that your
+      requirements are unsatisfiable.
+Checking if Streamlit is installed
+Installing rich for an improved exception logging
+Using uv pip install.
+Using Python 3.13.11 environment at /home/adminuser/venv
+Resolved 4 packages in 136ms
+Prepared 4 packages in 152ms
+Installed 4 packages in 28ms
+ + markdown-it-py==4.0.0
+ + mdurl==0.1.2
+ + pygments==2.19.2
+ + rich==14.2.0
+
+────────────────────────────────────────────────────────────────────────────────────────
+
+
+──────────────────────────────────────── pip ───────────────────────────────────────────
+
+Using standard pip install.
+[00:27:10] ⛓ Spinning up manager process...
+Collecting streamlit (from -r /mount/src/candlestick-watcher/requirements.txt (line 1))
+  Downloading streamlit-1.52.2-py3-none-any.whl.metadata (9.8 kB)
+Collecting pandas (from -r /mount/src/candlestick-watcher/requirements.txt (line 2))
+  Downloading pandas-2.3.3-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (91 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 91.2/91.2 kB 7.3 MB/s eta 0:00:00[2026-01-10 00:27:11.817471] 
+Collecting numpy (from -r /mount/src/candlestick-watcher/requirements.txt (line 3))
+  Downloading numpy-2.4.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (6.6 kB)
+Collecting plotly (from -r /mount/src/candlestick-watcher/requirements.txt (line 4))
+  Downloading plotly-6.5.1-py3-none-any.whl.metadata (8.5 kB)
+Collecting requests (from -r /mount/src/candlestick-watcher/requirements.txt (line 5))
+  Downloading requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+ERROR: Ignored the following versions that require a different python version: 0.55.2 Requires-Python <3.5; 1.21.2 Requires-Python >=3.7,<3.11; 1.21.3 Requires-Python >=3.7,<3.11; 1.21.4 Requires-Python >=3.7,<3.11; 1.21.5 Requires-Python >=3.7,<3.11; 1.21.6 Requires-Python >=3.7,<3.11; 1.26.0 Requires-Python <3.13,>=3.9; 1.26.1 Requires-Python <3.13,>=3.9
+ERROR: Could not find a version that satisfies the requirement ta-lib-bin (from versions: none)
+ERROR: No matching distribution found for ta-lib-bin
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: pip install --upgrade pip
+Checking if Streamlit is installed
+Installing rich for an improved exception logging
+Using standard pip install.
+Collecting rich>=10.14.0
+  Downloading rich-14.2.0-py3-none-any.whl.metadata (18 kB)
+Collecting markdown-it-py>=2.2.0 (from rich>=10.14.0)
+  Downloading markdown_it_py-4.0.0-py3-none-any.whl.metadata (7.3 kB)
+Collecting pygments<3.0.0,>=2.13.0 (from rich>=10.14.0)
+  Downloading pygments-2.19.2-py3-none-any.whl.metadata (2.5 kB)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=10.14.0)
+  Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Downloading rich-14.2.0-py3-none-any.whl (243 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 243.4/243.4 kB 14.2 MB/s eta 0:00:00[2026-01-10 00:27:13.674837] 
+Downloading markdown_it_py-4.0.0-py3-none-any.whl (87 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.3/87.3 kB 139.5 MB/s eta 0:00:00[2026-01-10 00:27:13.688080] 
+Downloading pygments-2.19.2-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 83.4 MB/s eta 0:00:00[2026-01-10 00:27:13.715974] 
+Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Installing collected packages: pygments, mdurl, markdown-it-py, rich
+  Attempting uninstall: pygments
+    Found existing installation: Pygments 2.19.2
+    Uninstalling Pygments-2.19.2:
+      Successfully uninstalled Pygments-2.19.2
+  Attempting uninstall: mdurl
+    Found existing installation: mdurl 0.1.2
+    Uninstalling mdurl-0.1.2:
+      Successfully uninstalled mdurl-0.1.2
+  Attempting uninstall: markdown-it-py
+    Found existing installation: markdown-it-py 4.0.0
+    Uninstalling markdown-it-py-4.0.0:
+      Successfully uninstalled markdown-it-py-4.0.0
+  Attempting uninstall: rich
+    Found existing installation: rich 14.2.0
+    Uninstalling rich-14.2.0:
+      Successfully uninstalled rich-14.2.0
+Successfully installed markdown-it-py-4.0.0 mdurl-0.1.2 pygments-2.19.2 rich-14.2.0
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: pip install --upgrade pip
+
+────────────────────────────────────────────────────────────────────────────────────────
+
+[00:27:16] ❗️ installer returned a non-zero exit code
+[00:27:16] ❗️ Error during processing dependencies! Please fix the error and push an update, or try restarting the app.
