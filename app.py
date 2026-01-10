@@ -57,7 +57,7 @@ def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
     """Fetch OHLCV data from Yahoo Finance."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        df = yf.download(ticker, period="1y", interval=interval, progress=False)
+        df = yf.download(ticker, period="max", interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
@@ -173,7 +173,7 @@ if scan_patterns:
         if not patterns.empty:
             fig.add_trace(go.Scatter(x=patterns['timestamp'], y=patterns['high'] * 1.01, mode='markers',
                                      marker=dict(symbol='triangle-down', size=12, color='orange'), name='Pattern', hovertext=patterns['candlestick_pattern']))
-        fig.update_layout(height=450, xaxis_rangeslider_visible=False, title=f"{symbol} Candlestick Patterns ({interval})")
+        fig.update_layout(height=450, xaxis_rangeslider_visible=False, title=f"{symbol} Candlestick Patterns ({interval})", dragmode='pan')
         st.plotly_chart(fig, use_container_width=True)
         
         # Table
@@ -244,7 +244,7 @@ if analyze_phase:
                 hovertemplate='%{x}<br>A/D: %{y:,.0f}<br><b>DISTRIBUTION</b><extra></extra>'
             ))
         
-        ad_fig.update_layout(title=f"{symbol} Accumulation/Distribution Line ({interval})", height=400)
+        ad_fig.update_layout(title=f"{symbol} Accumulation/Distribution Line ({interval})", height=400, dragmode='pan')
         st.plotly_chart(ad_fig, use_container_width=True)
         
         # Price Chart with phase overlay
@@ -268,7 +268,7 @@ if analyze_phase:
                 customdata=distrib_data['close']
             ))
         
-        price_fig.update_layout(height=400, xaxis_rangeslider_visible=False, title=f"{symbol} Price with A/D Phases ({interval})")
+        price_fig.update_layout(height=400, xaxis_rangeslider_visible=False, title=f"{symbol} Price with A/D Phases ({interval})", dragmode='pan')
         st.plotly_chart(price_fig, use_container_width=True)
         
         with st.expander("View Raw Data"):
