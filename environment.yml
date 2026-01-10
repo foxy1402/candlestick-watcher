@@ -1,0 +1,14 @@
+name: candlestick-watcher
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - ta-lib
+  - pandas
+  - numpy
+  - plotly
+  - requests
+  - pip
+  - pip:
+    - streamlit

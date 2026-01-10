@@ -1,0 +1,29 @@
+
+[     UTC     ] Logs for goodtrade.streamlit.app/
+────────────────────────────────────────────────────────────────────────────────────────
+[00:08:28] 🖥 Provisioning machine...
+[00:08:28] 🎛 Preparing system...
+[00:08:28] ⛓ Spinning up manager process...
+[00:08:27] 🚀 Starting up repository: 'candlestick-watcher', branch: 'main', main module: 'app.py'
+[00:08:27] 🐙 Cloning repository...
+[00:08:28] 🐙 Cloning into '/mount/src/candlestick-watcher'...
+
+[00:08:28] 🐙 Cloned repository!
+[00:08:28] 🐙 Pulling code changes from Github...
+[00:08:28] 📦 Processing dependencies...
+[00:08:28] 📦 Apt dependencies were installed from /mount/src/candlestick-watcher/packages.txt using apt-get.
+Hit:1 http://deb.debian.org/debian bookworm InRelease
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
+Get:4 https://packages.microsoft.com/debian/11/prod bullseye InRelease [3650 B]
+Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [290 kB]
+Get:6 https://packages.microsoft.com/debian/11/prod bullseye/main amd64 Packages [219 kB]
+Get:7 https://packages.microsoft.com/debian/11/prod bullseye/main arm64 Packages [64.1 kB]
+Fetched 681 kB in 0s (1623 kB/s)
+Reading package lists...[2026-01-10 00:08:29.753924] 
+Reading package lists...[2026-01-10 00:08:30.237910] 
+Building dependency tree...[2026-01-10 00:08:30.356697] 
+Reading state information...[2026-01-10 00:08:30.356935] 
+E: Unable to locate package ta-lib
+[00:08:31] ❗️ installer returned a non-zero exit code
+[00:08:31] ❗️ Error during processing dependencies! Please fix the error and push an update, or try restarting the app.
