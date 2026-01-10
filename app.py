@@ -283,6 +283,67 @@ if st.sidebar.button("Scan Patterns"):
 
         else:
             st.write("No patterns detected in the current timeframe.")
+
+        # --- Recent Patterns Table ---
+        st.subheader("Recent Detected Patterns")
+        # Filter mostly interesting columns
+        display_cols = ['timestamp', 'open', 'high', 'low', 'close', 'pattern_display']
+        recent_patterns = patterns.tail(10).sort_values(by='timestamp', ascending=False)
+        
+        if not recent_patterns.empty:
+            st.dataframe(recent_patterns[display_cols].style.applymap(
+                lambda x: 'color: green' if 'Bull' in str(x) else ('color: red' if 'Bear' in str(x) else ''),
+                subset=['pattern_display']
+            ))
+        else:
+            st.info("No significant patterns detected in the recent data.")
+
+
+        # --- Accumulation / Distribution Analysis ---
+        st.subheader("📊 Market Phase Analysis (Accumulation/Distribution)")
+        
+        # Calculate Indicators
+        # A/D requires volume. 
+        if 'volume' in df.columns:
+            df['ad'] = talib.AD(df['high'], df['low'], df['close'], df['volume'])
+            df['ad_ema'] = talib.EMA(df['ad'], timeperiod=21) # Smoothing line
+            
+            # Simple Logic for Phase: 
+            # We use divergence over the last 20 candles
+            recent = df.tail(20)
+            price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
+            ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
+            
+            phase_msg = "Neutral"
+            phase_color = "gray"
+            
+            if price_change < 0 and ad_change > 0:
+                phase_msg = "⚠️ Potential ACCUMULATION (Divergence: Price ↓, Money Flow ↑)"
+                phase_color = "green"
+            elif price_change > 0 and ad_change < 0:
+                phase_msg = "⚠️ Potential DISTRIBUTION (Divergence: Price ↑, Money Flow ↓)"
+                phase_color = "red"
+            elif ad_change > 0 and price_change > 0:
+                phase_msg = "Strong Uptrend (Confirmed by Volume)"
+                phase_color = "green"
+            elif ad_change < 0 and price_change < 0:
+                phase_msg = "Strong Downtrend (Confirmed by Volume)"
+                phase_color = "red"
+                
+            st.markdown(f"**Detected Phase Signal**: :{phase_color}[{phase_msg}]")
+            
+            # A/D Chart
+            ad_fig = go.Figure()
+            ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='Chaikin A/D Line', line=dict(color='orange')))
+            ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='A/D Signal (EMA 21)', line=dict(color='yellow', dash='dot')))
+            ad_fig.update_layout(title="Chaikin Accumulation/Distribution Line", height=300, xaxis_title="Time")
+            st.plotly_chart(ad_fig, use_container_width=True)
+        else:
+            st.warning("Volume data missing, cannot calculate Accumulation/Distribution.")
+
+        # Show raw data option
+        with st.expander("View Raw Data"):
+            st.dataframe(df)
             
     else:
         st.error(f"Could not load data for {symbol_input}. Try a valid Yahoo Ticker (e.g., BTC-USD).")
