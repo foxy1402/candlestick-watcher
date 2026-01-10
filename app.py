@@ -122,102 +122,102 @@ def analyze_ad_phase(df: pd.DataFrame) -> tuple:
 st.title("🕯️ Crypto Pattern Watcher")
 st.caption("Real-time data via Yahoo Finance | 50+ candlestick patterns | Accumulation/Distribution analysis")
 
-# Session State
-if 'df' not in st.session_state:
-    st.session_state.df = None
-
-# Sidebar
+# Sidebar - Settings
 with st.sidebar:
     st.header("⚙️ Settings")
     symbol = st.text_input("Symbol", value="BTC-USD").upper()
     interval = st.selectbox("Timeframe", ["1d", "1wk"], format_func=lambda x: "1 Day" if x == "1d" else "1 Week")
-    
-    st.divider()
-    col1, col2 = st.columns(2)
-    scan_patterns = col1.button("🔍 Scan Patterns", use_container_width=True)
-    analyze_phase = col2.button("📊 Analyze Phase", use_container_width=True)
 
-# Main Logic
+# Main Area - Two Independent Sections
+st.sidebar.divider()
+st.sidebar.subheader("📋 Pattern Scanner")
+scan_patterns = st.sidebar.button("🔍 Scan Patterns", use_container_width=True, help="Fetch data and detect candlestick patterns")
+
+st.sidebar.divider()
+st.sidebar.subheader("📊 Market Phase")
+analyze_phase = st.sidebar.button("📊 Analyze A/D Phase", use_container_width=True, help="Fetch data and analyze Accumulation/Distribution")
+
+# --- Pattern Scanner Section ---
 if scan_patterns:
-    with st.spinner(f"Fetching {symbol}..."):
-        st.session_state.df = fetch_data(symbol, interval)
+    with st.spinner(f"Fetching {symbol} ({interval})..."):
+        df = fetch_data(symbol, interval)
     
-    if st.session_state.df is not None and not st.session_state.df.empty:
-        st.session_state.df = detect_patterns(st.session_state.df)
-        st.success("Pattern scan complete!")
-
-if analyze_phase:
-    if st.session_state.df is None or st.session_state.df.empty:
-        with st.spinner(f"Fetching {symbol}..."):
-            st.session_state.df = fetch_data(symbol, interval)
-    
-    if st.session_state.df is not None and not st.session_state.df.empty:
-        phase_msg, phase_color, st.session_state.df = analyze_ad_phase(st.session_state.df)
-        st.success("Phase analysis complete!")
-
-# Display Results
-if st.session_state.df is not None and not st.session_state.df.empty:
-    df = st.session_state.df
-    last = df.iloc[-1]
-    
-    # Metrics
-    st.metric(f"{symbol} Price", f"${last['close']:,.2f}", f"{((last['close'] - df.iloc[-2]['close'])/df.iloc[-2]['close'])*100:.2f}%")
-    
-    # Candlestick Chart
-    fig = go.Figure(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name=symbol))
-    
-    if 'candlestick_pattern' in df.columns:
+    if not df.empty:
+        df = detect_patterns(df)
+        last = df.iloc[-1]
+        
+        st.metric(f"{symbol} Price", f"${last['close']:,.2f}", f"{((last['close'] - df.iloc[-2]['close'])/df.iloc[-2]['close'])*100:.2f}%")
+        
+        # Chart
+        fig = go.Figure(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name=symbol))
         patterns = df[df['candlestick_pattern'] != 'NO_PATTERN']
         if not patterns.empty:
             fig.add_trace(go.Scatter(x=patterns['timestamp'], y=patterns['high'] * 1.01, mode='markers',
                                      marker=dict(symbol='triangle-down', size=12, color='orange'), name='Pattern', hovertext=patterns['candlestick_pattern']))
-    
-    fig.update_layout(height=450, xaxis_rangeslider_visible=False, title=f"{symbol} Chart")
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Tabs for organized content
-    tab1, tab2, tab3 = st.tabs(["📋 Patterns", "📊 A/D Analysis", "📄 Raw Data"])
-    
-    with tab1:
-        if 'candlestick_pattern' in df.columns:
-            patterns = df[df['candlestick_pattern'] != 'NO_PATTERN']
-            if not patterns.empty:
-                recent = patterns.tail(10).sort_values('timestamp', ascending=False)
-                st.dataframe(recent[['timestamp', 'close', 'candlestick_pattern']].rename(columns={'candlestick_pattern': 'Pattern'}), use_container_width=True)
-                
-                latest = patterns.iloc[-1]
-                base_name = latest['pattern_display']
-                desc = PATTERN_DESCRIPTIONS.get(base_name, "Pattern detected.")
-                st.info(f"**{latest['candlestick_pattern']}** on {latest['timestamp'].strftime('%Y-%m-%d')}: {desc}")
-            else:
-                st.info("No patterns detected. Try a different timeframe.")
-        else:
-            st.warning("Click 'Scan Patterns' first.")
-    
-    with tab2:
-        if 'ad' in df.columns:
-            recent = df.tail(20)
-            price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
-            ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
+        fig.update_layout(height=450, xaxis_rangeslider_visible=False, title=f"{symbol} Candlestick Patterns ({interval})")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Table
+        st.subheader("Recent Patterns")
+        if not patterns.empty:
+            recent = patterns.tail(10).sort_values('timestamp', ascending=False)
+            st.dataframe(recent[['timestamp', 'close', 'candlestick_pattern']].rename(columns={'candlestick_pattern': 'Pattern'}), use_container_width=True)
             
-            if price_change < 0 and ad_change > 0:
-                st.success("⚠️ **ACCUMULATION** - Price falling but money flowing in (divergence)")
-            elif price_change > 0 and ad_change < 0:
-                st.error("⚠️ **DISTRIBUTION** - Price rising but money flowing out (divergence)")
-            elif ad_change > 0:
-                st.success("📈 **Uptrend** confirmed by volume")
-            else:
-                st.error("📉 **Downtrend** confirmed by volume")
-            
-            ad_fig = go.Figure()
-            ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='A/D Line', line=dict(color='orange')))
-            ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', line=dict(color='yellow', dash='dot')))
-            ad_fig.update_layout(title="Chaikin A/D Line", height=300)
-            st.plotly_chart(ad_fig, use_container_width=True)
+            latest = patterns.iloc[-1]
+            base_name = latest['pattern_display']
+            desc = PATTERN_DESCRIPTIONS.get(base_name, "Pattern detected.")
+            st.info(f"**{latest['candlestick_pattern']}** on {latest['timestamp'].strftime('%Y-%m-%d')}: {desc}")
         else:
-            st.warning("Click 'Analyze Phase' first.")
+            st.info("No patterns detected in this timeframe.")
+        
+        with st.expander("View Raw Data"):
+            st.dataframe(df, use_container_width=True)
+    else:
+        st.error(f"Could not load data for {symbol}. Try a valid ticker (e.g., BTC-USD, ETH-USD, AAPL).")
+
+# --- A/D Phase Section (Completely Independent) ---
+if analyze_phase:
+    with st.spinner(f"Fetching {symbol} ({interval}) for A/D analysis..."):
+        df = fetch_data(symbol, interval)
     
-    with tab3:
-        st.dataframe(df, use_container_width=True)
-else:
-    st.info("👈 Enter a symbol and click 'Scan Patterns' or 'Analyze Phase' to start.")
+    if not df.empty:
+        phase_msg, phase_color, df = analyze_ad_phase(df)
+        last = df.iloc[-1]
+        
+        st.metric(f"{symbol} Price", f"${last['close']:,.2f}", f"{((last['close'] - df.iloc[-2]['close'])/df.iloc[-2]['close'])*100:.2f}%")
+        
+        # Phase Result
+        st.subheader("📊 Market Phase Analysis")
+        recent = df.tail(20)
+        price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
+        ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
+        
+        if price_change < 0 and ad_change > 0:
+            st.success("⚠️ **ACCUMULATION DETECTED** — Price is falling but money is flowing IN (bullish divergence)")
+        elif price_change > 0 and ad_change < 0:
+            st.error("⚠️ **DISTRIBUTION DETECTED** — Price is rising but money is flowing OUT (bearish divergence)")
+        elif ad_change > 0:
+            st.success("📈 **Uptrend** — Confirmed by positive money flow")
+        else:
+            st.error("📉 **Downtrend** — Confirmed by negative money flow")
+        
+        # A/D Chart
+        ad_fig = go.Figure()
+        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='Chaikin A/D Line', line=dict(color='orange', width=2)))
+        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', line=dict(color='yellow', dash='dot')))
+        ad_fig.update_layout(title=f"{symbol} Accumulation/Distribution Line ({interval})", height=350)
+        st.plotly_chart(ad_fig, use_container_width=True)
+        
+        # Price Chart for context
+        price_fig = go.Figure(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name=symbol))
+        price_fig.update_layout(height=350, xaxis_rangeslider_visible=False, title=f"{symbol} Price ({interval})")
+        st.plotly_chart(price_fig, use_container_width=True)
+        
+        with st.expander("View Raw Data"):
+            st.dataframe(df, use_container_width=True)
+    else:
+        st.error(f"Could not load data for {symbol}. Try a valid ticker (e.g., BTC-USD, ETH-USD, AAPL).")
+
+# Default state
+if not scan_patterns and not analyze_phase:
+    st.info("👈 Select an analysis from the sidebar:\n\n- **Scan Patterns**: Detect 50+ candlestick patterns\n- **Analyze A/D Phase**: Check for Accumulation/Distribution signals")
