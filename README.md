@@ -1,6 +1,6 @@
 # 🕯️ Crypto Candlestick Pattern Watcher
 
-A **Streamlit web application** that detects 50+ candlestick patterns and analyzes market phases (Accumulation/Distribution) using real-time data from Yahoo Finance.
+A **Streamlit web application** for long-term crypto investors. Analyzes market phases (Accumulation/Distribution), detects 50+ candlestick patterns, and provides entry signals using real-time data from Yahoo Finance.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Cloud-red?logo=streamlit)
@@ -10,14 +10,32 @@ A **Streamlit web application** that detects 50+ candlestick patterns and analyz
 
 | Feature | Description |
 |---------|-------------|
-| **50+ Pattern Detection** | Hammer, Doji, Engulfing, Morning Star, and more |
-| **A/D Phase Analysis** | Detect Accumulation & Distribution divergences |
-| **Interactive Charts** | Plotly candlestick charts with pattern markers |
-| **Multi-Timeframe** | 1 Day & 1 Week candles for long-term analysis |
+| **📋 Watchlist Dashboard** | Monitor multiple assets at a glance with A/D status |
+| **🟢 Phase Zones** | Shaded chart areas showing Accumulation/Distribution periods |
+| **🛒 Simplified Wyckoff** | Beginner-friendly labels: "Smart Money Buying/Selling" |
+| **⭐ Entry Signals** | Strong Buy/Sell when A/D + Pattern align |
+| **🔄 Timeframe Compare** | Daily vs Weekly alignment check |
+| **50+ Patterns** | Hammer, Doji, Engulfing, Morning Star, and more |
 
 ## 🚀 Live Demo
 
-**[Open App](https://goodtrade.streamlit.app/)** *(Replace with your actual URL)*
+**[Open App](https://goodtrade.streamlit.app/)**
+
+## 📊 How to Use (For Long-Term Investors)
+
+### 1. Watchlist Dashboard
+Add your favorite coins (BTC, ETH, SOL, etc.) and see which ones are in **Accumulation** (🟢) or **Distribution** (🔴) at a glance.
+
+### 2. Single Asset Analysis
+Select a coin and click "Analyze" to see:
+- **Phase Zones**: Green shaded areas = Accumulation periods
+- **Wyckoff Phase**: Simple labels like "Smart Money Buying"
+- **Entry Signals**: ⭐ markers when pattern + phase align
+
+### 3. Timeframe Comparison
+Check if Daily AND Weekly charts agree:
+- ✅ Both bullish = High confidence entry
+- ⚠️ Mixed = Wait for confirmation
 
 ## 🛠️ Tech Stack
 
@@ -48,16 +66,6 @@ streamlit run app.py
 2. Go to [share.streamlit.io](https://share.streamlit.io)
 3. Connect your repo, select `app.py`
 4. Deploy!
-
-## 📊 How It Works
-
-### Pattern Detection
-Uses TA-Lib's pattern recognition functions to scan candles and rank patterns by importance (e.g., Three Line Strike > Doji).
-
-### Accumulation/Distribution
-Calculates the **Chaikin A/D Line** and detects divergences:
-- **Accumulation**: Price falling but A/D rising (smart money buying)
-- **Distribution**: Price rising but A/D falling (smart money selling)
 
 ## 📝 License
 
