@@ -14,6 +14,19 @@ st.set_page_config(layout="wide", page_title="Crypto Pattern Watcher", page_icon
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = ['BTC-USD', 'ETH-USD', 'SOL-USD']
 
+# --- Helper Functions for Data Safety ---
+def safe_pct_change(current: float, previous: float) -> float:
+    """Calculate percentage change with zero/NaN safety."""
+    if previous == 0 or pd.isna(previous) or pd.isna(current) or np.isinf(previous) or np.isinf(current):
+        return 0.0
+    return ((current - previous) / previous) * 100
+
+def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
+    """Safe division with zero/NaN protection."""
+    if denominator == 0 or pd.isna(denominator) or pd.isna(numerator):
+        return default
+    return numerator / denominator
+
 # --- Constants ---
 PATTERN_RANKINGS = {
     "CDL3LINESTRIKE_Bull": 1, "CDL3LINESTRIKE_Bear": 2, "CDL3BLACKCROWS_Bull": 3, "CDL3BLACKCROWS_Bear": 3,
@@ -127,9 +140,11 @@ def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
 
 def analyze_ad_phase_fast(df: pd.DataFrame, lookback: int = 20) -> tuple:
     """Optimized A/D analysis using numpy vectorization."""
-    # Vectorized A/D calculation
+    # Vectorized A/D calculation with NaN handling
     df['ad'] = talib.AD(df['high'].values, df['low'].values, df['close'].values, df['volume'].values)
+    df['ad'] = df['ad'].fillna(0)  # Fill NaN values
     df['ad_ema'] = talib.EMA(df['ad'].values, timeperiod=21)
+    df['ad_ema'] = df['ad_ema'].fillna(df['ad'])  # Use raw AD where EMA is NaN
     
     # Vectorized phase detection
     df['price_change'] = df['close'].diff(lookback)
@@ -250,7 +265,7 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
 def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     """Calculate multi-period performance returns using date-based lookback."""
     if df.empty or len(df) < 2:
-        return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0}
+        return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0, 'data_age_days': 999}
     
     # Ensure timestamp is datetime first
     if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
@@ -260,12 +275,18 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     current_price = df['close'].iloc[-1]
     current_date = pd.to_datetime(df['timestamp'].iloc[-1])
     
+    # Calculate data age (how old is the latest data point)
+    try:
+        data_age_days = (pd.Timestamp.now(tz=None) - current_date.tz_localize(None) if current_date.tzinfo else pd.Timestamp.now() - current_date).days
+    except:
+        data_age_days = 0
+    
     # 7D return (find price ~7 days ago)
     target_7d = current_date - pd.Timedelta(days=7)
     df_7d = df[df['timestamp'] <= target_7d]
     if not df_7d.empty:
         price_7d = df_7d['close'].iloc[-1]
-        ret_7d = ((current_price - price_7d) / price_7d) * 100
+        ret_7d = safe_pct_change(current_price, price_7d)
     else:
         ret_7d = 0
     
@@ -274,7 +295,7 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     df_30d = df[df['timestamp'] <= target_30d]
     if not df_30d.empty:
         price_30d = df_30d['close'].iloc[-1]
-        ret_30d = ((current_price - price_30d) / price_30d) * 100
+        ret_30d = safe_pct_change(current_price, price_30d)
     else:
         ret_30d = 0
     
@@ -283,7 +304,7 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     df_90d = df[df['timestamp'] <= target_90d]
     if not df_90d.empty:
         price_90d = df_90d['close'].iloc[-1]
-        ret_90d = ((current_price - price_90d) / price_90d) * 100
+        ret_90d = safe_pct_change(current_price, price_90d)
     else:
         ret_90d = 0
     
@@ -292,11 +313,11 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     ytd_data = df[df['timestamp'].dt.year == current_year]
     if len(ytd_data) > 1:
         price_ytd_start = ytd_data['close'].iloc[0]
-        ret_ytd = ((current_price - price_ytd_start) / price_ytd_start) * 100
+        ret_ytd = safe_pct_change(current_price, price_ytd_start)
     else:
         ret_ytd = 0
     
-    return {'7d': ret_7d, '30d': ret_30d, '90d': ret_90d, 'ytd': ret_ytd}
+    return {'7d': ret_7d, '30d': ret_30d, '90d': ret_90d, 'ytd': ret_ytd, 'data_age_days': data_age_days}
 
 def calculate_signal_strength(phase: str, wyckoff: dict, df: pd.DataFrame, lookback: int = 52) -> tuple:
     """
@@ -375,8 +396,12 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
     support1 = 2 * pivot - high
     resistance1 = 2 * pivot - low
     
+    # Ensure support < resistance (can be inverted in volatile markets)
+    if support1 > resistance1:
+        support1, resistance1 = resistance1, support1
+    
     # Entry zone (around support)
-    entry_low = support1
+    entry_low = max(0, support1)  # Ensure non-negative
     entry_high = support1 + (pivot - support1) * 0.3
     
     return {
@@ -404,7 +429,7 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int) -> d
         
         last_price = df.iloc[-1]['close']
         prev_price = df.iloc[-2]['close'] if len(df) > 1 else last_price
-        pct_change = ((last_price - prev_price) / prev_price) * 100
+        pct_change = safe_pct_change(last_price, prev_price)
         
         # Performance metrics
         perf = calculate_performance_metrics(df)
@@ -491,9 +516,16 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
     score += phase_align // 2
     factors['phase_alignment'] = phase_align
     
-    # Trend direction (30 points)
-    daily_trend = 1 if df_daily['close'].iloc[-1] > df_daily['close'].iloc[-20] else -1 if len(df_daily) >= 20 else 0
-    weekly_trend = 1 if df_weekly['close'].iloc[-1] > df_weekly['close'].iloc[-10] else -1 if len(df_weekly) >= 10 else 0
+    # Trend direction (30 points) - check length BEFORE accessing index
+    if len(df_daily) >= 20:
+        daily_trend = 1 if df_daily['close'].iloc[-1] > df_daily['close'].iloc[-20] else -1
+    else:
+        daily_trend = 0
+    
+    if len(df_weekly) >= 10:
+        weekly_trend = 1 if df_weekly['close'].iloc[-1] > df_weekly['close'].iloc[-10] else -1
+    else:
+        weekly_trend = 0
     
     if daily_trend == weekly_trend == 1:
         trend_align = 30
@@ -505,10 +537,17 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
     score += trend_align // 2
     factors['trend_alignment'] = trend_align
     
-    # A/D momentum (30 points)
+    # A/D momentum (30 points) - with proper bounds checking
     if 'ad' in df_daily.columns and 'ad' in df_weekly.columns:
-        ad_daily = df_daily['ad'].iloc[-1] - df_daily['ad'].iloc[-20] if len(df_daily) >= 20 else 0
-        ad_weekly = df_weekly['ad'].iloc[-1] - df_weekly['ad'].iloc[-10] if len(df_weekly) >= 10 else 0
+        if len(df_daily) >= 20:
+            ad_daily = df_daily['ad'].iloc[-1] - df_daily['ad'].iloc[-20]
+        else:
+            ad_daily = 0
+        
+        if len(df_weekly) >= 10:
+            ad_weekly = df_weekly['ad'].iloc[-1] - df_weekly['ad'].iloc[-10]
+        else:
+            ad_weekly = 0
         
         if ad_daily > 0 and ad_weekly > 0:
             ad_align = 30
