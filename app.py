@@ -48,13 +48,12 @@ PATTERN_RANKINGS = {
 
 # --- Optimized Functions ---
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_data(symbol: str, interval: str, limit_bars: int = 500) -> pd.DataFrame:
-    """Fetch OHLCV data from Yahoo Finance with optimized period."""
+def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
+    """Fetch OHLCV data from Yahoo Finance - full history."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        # Use appropriate period based on interval to limit data
-        period = "2y" if interval == "1d" else "5y"
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        # Fetch full historical data
+        df = yf.download(ticker, period="max", interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
@@ -67,18 +66,17 @@ def fetch_data(symbol: str, interval: str, limit_bars: int = 500) -> pd.DataFram
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
-        # Limit to last N bars for performance
-        return df.tail(limit_bars).reset_index(drop=True)
+        return df
     except Exception as e:
         return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
-    """Lightweight fetch for watchlist - minimal data."""
+    """Lightweight fetch for watchlist - uses cached full data."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        period = "6mo" if interval == "1d" else "2y"
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        # Still use max for full history, but analysis uses tail
+        df = yf.download(ticker, period="max", interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
@@ -90,7 +88,8 @@ def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
-        return df.tail(100).reset_index(drop=True)
+        # Return last 150 bars for watchlist analysis (enough for lookback)
+        return df.tail(150).reset_index(drop=True)
     except:
         return pd.DataFrame()
 
