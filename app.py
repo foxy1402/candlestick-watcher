@@ -248,35 +248,47 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
     return zones  # Return all zones
 
 def calculate_performance_metrics(df: pd.DataFrame) -> dict:
-    """Calculate multi-period performance returns."""
+    """Calculate multi-period performance returns using date-based lookback."""
     if df.empty or len(df) < 2:
         return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0}
     
-    current_price = df['close'].iloc[-1]
+    # Ensure timestamp is datetime first
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df = df.copy()
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
     
-    # 7D return
-    if len(df) >= 7:
-        price_7d = df['close'].iloc[-7]
+    current_price = df['close'].iloc[-1]
+    current_date = pd.to_datetime(df['timestamp'].iloc[-1])
+    
+    # 7D return (find price ~7 days ago)
+    target_7d = current_date - pd.Timedelta(days=7)
+    df_7d = df[df['timestamp'] <= target_7d]
+    if not df_7d.empty:
+        price_7d = df_7d['close'].iloc[-1]
         ret_7d = ((current_price - price_7d) / price_7d) * 100
     else:
         ret_7d = 0
     
     # 30D return
-    if len(df) >= 30:
-        price_30d = df['close'].iloc[-30]
+    target_30d = current_date - pd.Timedelta(days=30)
+    df_30d = df[df['timestamp'] <= target_30d]
+    if not df_30d.empty:
+        price_30d = df_30d['close'].iloc[-1]
         ret_30d = ((current_price - price_30d) / price_30d) * 100
     else:
         ret_30d = 0
     
     # 90D return
-    if len(df) >= 90:
-        price_90d = df['close'].iloc[-90]
+    target_90d = current_date - pd.Timedelta(days=90)
+    df_90d = df[df['timestamp'] <= target_90d]
+    if not df_90d.empty:
+        price_90d = df_90d['close'].iloc[-1]
         ret_90d = ((current_price - price_90d) / price_90d) * 100
     else:
         ret_90d = 0
     
     # YTD return
-    current_year = df['timestamp'].iloc[-1].year
+    current_year = current_date.year
     ytd_data = df[df['timestamp'].dt.year == current_year]
     if len(ytd_data) > 1:
         price_ytd_start = ytd_data['close'].iloc[0]
