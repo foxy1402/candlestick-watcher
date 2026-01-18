@@ -467,13 +467,88 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         )
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
         
-        # A/D Line Chart
+        # A/D Line Chart with Explanation
         st.subheader("💰 Money Flow (A/D Line)")
+        
+        # Calculate A/D trend for interpretation
+        ad_recent = df.tail(lookback_period)
+        ad_start = ad_recent['ad'].iloc[0]
+        ad_end = ad_recent['ad'].iloc[-1]
+        ad_trend = ad_end - ad_start
+        ad_trend_pct = (ad_trend / abs(ad_start)) * 100 if ad_start != 0 else 0
+        
+        # Interpretation box
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            trend_icon = "📈" if ad_trend > 0 else "📉"
+            trend_label = "Money Flowing IN" if ad_trend > 0 else "Money Flowing OUT"
+            st.metric("Current Trend", f"{trend_icon} {trend_label}")
+        with col2:
+            st.metric("A/D Change", f"{ad_trend_pct:+.1f}%", delta=f"Last {lookback_period} bars")
+        with col3:
+            # Compare with price to detect divergence
+            price_change = df['close'].iloc[-1] - df['close'].iloc[-lookback_period] if len(df) > lookback_period else 0
+            if price_change < 0 and ad_trend > 0:
+                st.success("🔍 **Bullish Divergence** (Price ↓ but Money ↑)")
+            elif price_change > 0 and ad_trend < 0:
+                st.error("🔍 **Bearish Divergence** (Price ↑ but Money ↓)")
+            else:
+                st.info("🔍 **No Divergence** (Price & Money aligned)")
+        
+        # Build enhanced A/D chart
         ad_fig = go.Figure()
-        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='A/D Line', line=dict(color='orange', width=2)))
-        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', line=dict(color='yellow', dash='dot')))
-        ad_fig.update_layout(height=300, template='plotly_dark', title="Accumulation/Distribution Line")
+        
+        # A/D line with fill
+        ad_fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['ad'], 
+            name='A/D Line', 
+            line=dict(color='orange', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(255, 165, 0, 0.1)'
+        ))
+        ad_fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['ad_ema'], 
+            name='EMA 21 (Trend)', 
+            line=dict(color='yellow', dash='dot', width=1.5)
+        ))
+        
+        # Add zero line for reference
+        ad_fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+        
+        # Add annotations for key points
+        ad_fig.update_layout(
+            height=350, 
+            template='plotly_dark', 
+            title="Accumulation/Distribution Line",
+            yaxis_title="A/D Value",
+            xaxis_title="Date",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
         st.plotly_chart(ad_fig, use_container_width=True, config={'scrollZoom': True})
+        
+        # Explanation
+        with st.expander("📖 How to Read This Chart", expanded=False):
+            st.markdown("""
+            ### What is the A/D Line?
+            The **Accumulation/Distribution Line** tracks whether money is flowing INTO or OUT OF an asset.
+            
+            | Signal | What It Means |
+            |--------|---------------|
+            | **Line Rising** 📈 | More buying pressure (accumulation) |
+            | **Line Falling** 📉 | More selling pressure (distribution) |
+            | **Above EMA** | Money flow is stronger than average |
+            | **Below EMA** | Money flow is weaker than average |
+            
+            ### Key Divergences (Most Important!)
+            
+            | Divergence | Meaning | Action |
+            |------------|---------|--------|
+            | **Price ↓ but A/D ↑** | Smart money buying while price drops | 🟢 **Bullish** - Consider accumulating |
+            | **Price ↑ but A/D ↓** | Smart money selling while price rises | 🔴 **Bearish** - Consider taking profits |
+            
+            > 💡 **For Long-Term Investors:** Focus on divergences! When price is falling but A/D is rising, it often signals a good accumulation opportunity.
+            """)
+
         
         # Signal History Table
         st.subheader("📊 Recent Entry Signals")
