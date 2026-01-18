@@ -456,15 +456,11 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int) -> d
         }
 
 def get_watchlist_status_parallel(symbols: list, interval: str = '1wk', lookback: int = 52) -> list:
-    """Fetch enhanced watchlist status in parallel for speed."""
+    """Fetch watchlist status SEQUENTIALLY - yfinance has thread-safety issues with ThreadPoolExecutor."""
     results = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(fetch_symbol_status_enhanced, sym, interval, lookback): sym for sym in symbols}
-        for future in as_completed(futures):
-            results.append(future.result())
-    # Sort to maintain original order
-    symbol_order = {sym: i for i, sym in enumerate(symbols)}
-    results.sort(key=lambda x: symbol_order.get(x['symbol'], 999))
+    for sym in symbols:
+        result = fetch_symbol_status_enhanced(sym, interval, lookback)
+        results.append(result)
     return results
 
 def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> dict:
