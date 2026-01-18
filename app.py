@@ -5,6 +5,7 @@ import talib
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="Crypto Pattern Watcher", page_icon="🕯️")
@@ -45,16 +46,15 @@ PATTERN_RANKINGS = {
     "CDL3STARSINSOUTH_Bull": 103, "CDL3STARSINSOUTH_Bear": 103, "CDLDOJI_Bull": 104, "CDLDOJI_Bear": 104
 }
 
-BULLISH_PATTERNS = ['HAMMER', 'MORNINGSTAR', 'ENGULFING', 'PIERCING', '3WHITESOLDIERS', 'MORNINGDOJISTAR', 'HARAMI', '3INSIDE', '3OUTSIDE']
-BEARISH_PATTERNS = ['SHOOTINGSTAR', 'EVENINGSTAR', 'ENGULFING', 'DARKCLOUDCOVER', '3BLACKCROWS', 'EVENINGDOJISTAR', 'HANGINGMAN']
-
-# --- Functions ---
-@st.cache_data(ttl=300)
-def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch OHLCV data from Yahoo Finance."""
+# --- Optimized Functions ---
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_data(symbol: str, interval: str, limit_bars: int = 500) -> pd.DataFrame:
+    """Fetch OHLCV data from Yahoo Finance with optimized period."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        df = yf.download(ticker, period="max", interval=interval, progress=False)
+        # Use appropriate period based on interval to limit data
+        period = "2y" if interval == "1d" else "5y"
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
@@ -67,76 +67,107 @@ def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
-        return df
+        # Limit to last N bars for performance
+        return df.tail(limit_bars).reset_index(drop=True)
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 
-def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply TA-Lib pattern recognition and rank results."""
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
+    """Lightweight fetch for watchlist - minimal data."""
+    try:
+        ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
+        period = "6mo" if interval == "1d" else "2y"
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.reset_index()
+        df.columns = [c.lower() for c in df.columns]
+        if 'date' in df.columns:
+            df.rename(columns={'date': 'timestamp'}, inplace=True)
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
+        return df.tail(100).reset_index(drop=True)
+    except:
+        return pd.DataFrame()
+
+def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized pattern detection - much faster than iterrows."""
     candle_names = talib.get_function_groups()['Pattern Recognition']
-    op, hi, lo, cl = df['open'], df['high'], df['low'], df['close']
+    op, hi, lo, cl = df['open'].values, df['high'].values, df['low'].values, df['close'].values
     
+    # Apply all patterns at once (vectorized)
+    pattern_results = {}
     for candle in candle_names:
-        df[candle] = getattr(talib, candle)(op, hi, lo, cl)
+        pattern_results[candle] = getattr(talib, candle)(op, hi, lo, cl)
     
+    # Initialize result columns
     df['candlestick_pattern'] = "NO_PATTERN"
     df['candlestick_match_count'] = 0
     df['pattern_direction'] = 'neutral'
     
-    for idx, row in df.iterrows():
-        found = [(c, row[c]) for c in candle_names if row[c] != 0]
+    # Vectorized pattern detection
+    for i in range(len(df)):
+        found = []
+        for candle, values in pattern_results.items():
+            if values[i] != 0:
+                direction = 'Bull' if values[i] > 0 else 'Bear'
+                pattern_key = f"{candle}_{direction}"
+                rank = PATTERN_RANKINGS.get(pattern_key, 999)
+                found.append((pattern_key, rank, values[i]))
+        
         if found:
-            ranked = sorted(
-                [(f"{n}_{'Bull' if v > 0 else 'Bear'}", PATTERN_RANKINGS.get(f"{n}_{'Bull' if v > 0 else 'Bear'}", 999), v) for n, v in found],
-                key=lambda x: x[1]
-            )
-            df.loc[idx, 'candlestick_pattern'] = ranked[0][0]
-            df.loc[idx, 'candlestick_match_count'] = len(ranked)
-            df.loc[idx, 'pattern_direction'] = 'bullish' if ranked[0][2] > 0 else 'bearish'
+            found.sort(key=lambda x: x[1])
+            df.iloc[i, df.columns.get_loc('candlestick_pattern')] = found[0][0]
+            df.iloc[i, df.columns.get_loc('candlestick_match_count')] = len(found)
+            df.iloc[i, df.columns.get_loc('pattern_direction')] = 'bullish' if found[0][2] > 0 else 'bearish'
     
     df['pattern_display'] = df['candlestick_pattern'].str.replace('NO_PATTERN|CDL|_Bull|_Bear', '', regex=True)
     return df
 
-def analyze_ad_phase(df: pd.DataFrame, lookback: int = 20) -> tuple:
-    """Calculate Chaikin A/D and determine market phase with historical phases."""
-    df['ad'] = talib.AD(df['high'], df['low'], df['close'], df['volume'])
-    df['ad_ema'] = talib.EMA(df['ad'], timeperiod=21)
-    df['volume_sma'] = talib.SMA(df['volume'], timeperiod=20)
+def analyze_ad_phase_fast(df: pd.DataFrame, lookback: int = 20) -> tuple:
+    """Optimized A/D analysis using numpy vectorization."""
+    # Vectorized A/D calculation
+    df['ad'] = talib.AD(df['high'].values, df['low'].values, df['close'].values, df['volume'].values)
+    df['ad_ema'] = talib.EMA(df['ad'].values, timeperiod=21)
     
-    # Calculate rolling price and A/D changes for historical phase detection
+    # Vectorized phase detection
     df['price_change'] = df['close'].diff(lookback)
     df['ad_change'] = df['ad'].diff(lookback)
     
-    # Determine phase for each bar
+    # Use numpy select for vectorized conditions
     conditions = [
-        (df['price_change'] < 0) & (df['ad_change'] > 0),  # Accumulation
-        (df['price_change'] > 0) & (df['ad_change'] < 0),  # Distribution
-        (df['ad_change'] > 0),  # Uptrend
-        (df['ad_change'] < 0),  # Downtrend
+        (df['price_change'] < 0) & (df['ad_change'] > 0),
+        (df['price_change'] > 0) & (df['ad_change'] < 0),
+        (df['ad_change'] > 0),
+        (df['ad_change'] < 0),
     ]
     choices = ['accumulation', 'distribution', 'uptrend', 'downtrend']
     df['phase'] = np.select(conditions, choices, default='neutral')
     
-    # Current phase analysis
-    recent = df.tail(lookback)
-    price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
-    ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
-    
-    if price_change < 0 and ad_change > 0:
-        return "accumulation", "green", df
-    elif price_change > 0 and ad_change < 0:
-        return "distribution", "red", df
-    elif ad_change > 0:
-        return "uptrend", "green", df
-    elif ad_change < 0:
-        return "downtrend", "red", df
+    # Current phase
+    if len(df) >= lookback:
+        recent = df.tail(lookback)
+        price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
+        ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
+        
+        if price_change < 0 and ad_change > 0:
+            return "accumulation", "green", df
+        elif price_change > 0 and ad_change < 0:
+            return "distribution", "red", df
+        elif ad_change > 0:
+            return "uptrend", "green", df
+        elif ad_change < 0:
+            return "downtrend", "red", df
     return "neutral", "gray", df
 
-def detect_wyckoff_phase(df: pd.DataFrame, lookback: int = 52) -> dict:
-    """Simplified Wyckoff phase detection for beginners."""
+def detect_wyckoff_fast(df: pd.DataFrame, lookback: int = 52) -> dict:
+    """Simplified Wyckoff detection - optimized."""
     if len(df) < lookback:
-        return {"phase": "Insufficient Data", "emoji": "⚪", "description": "Need more historical data"}
+        return {"phase": "Insufficient Data", "emoji": "⚪", "label": "N/A", "description": "Need more data", "color": "gray"}
     
     recent = df.tail(lookback)
     current_price = recent['close'].iloc[-1]
@@ -144,178 +175,129 @@ def detect_wyckoff_phase(df: pd.DataFrame, lookback: int = 52) -> dict:
     price_low = recent['low'].min()
     price_range = price_high - price_low
     
-    # Volume analysis
-    avg_volume = recent['volume'].mean()
-    recent_volume = df.tail(5)['volume'].mean()
-    volume_spike = recent_volume > avg_volume * 1.5
+    if price_range == 0:
+        return {"phase": "Ranging", "emoji": "↔️", "label": "SIDEWAYS", "description": "Market consolidating", "color": "gray"}
     
-    # Price position in range
-    price_position = (current_price - price_low) / price_range if price_range > 0 else 0.5
-    
-    # A/D trend
-    ad_trend = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
+    price_position = (current_price - price_low) / price_range
+    ad_trend = recent['ad'].iloc[-1] - recent['ad'].iloc[0] if 'ad' in recent.columns else 0
     price_trend = recent['close'].iloc[-1] - recent['close'].iloc[0]
     
-    # Simplified Wyckoff Detection
     if price_position < 0.3 and ad_trend > 0:
-        # Near lows but money flowing in
-        if volume_spike and price_trend > 0:
-            return {"phase": "Spring (Shakeout)", "emoji": "⚡", "label": "POTENTIAL BUY", 
-                    "description": "Price shook out weak hands, smart money buying", "color": "green"}
         return {"phase": "Accumulation", "emoji": "🛒", "label": "SMART MONEY BUYING",
-                "description": "Big players quietly accumulating at low prices", "color": "green"}
-    
+                "description": "Big players quietly accumulating", "color": "green"}
     elif price_position > 0.7 and ad_trend < 0:
-        # Near highs but money flowing out
-        if volume_spike and price_trend < 0:
-            return {"phase": "UTAD (Bull Trap)", "emoji": "💀", "label": "POTENTIAL SELL",
-                    "description": "False breakout, smart money distributing", "color": "red"}
         return {"phase": "Distribution", "emoji": "💸", "label": "SMART MONEY SELLING",
-                "description": "Big players quietly selling at high prices", "color": "red"}
-    
+                "description": "Big players quietly selling", "color": "red"}
     elif ad_trend > 0 and price_trend > 0:
         return {"phase": "Markup", "emoji": "📈", "label": "TRENDING UP",
-                "description": "Healthy uptrend with volume confirmation", "color": "green"}
-    
+                "description": "Healthy uptrend with volume", "color": "green"}
     elif ad_trend < 0 and price_trend < 0:
         return {"phase": "Markdown", "emoji": "📉", "label": "TRENDING DOWN",
-                "description": "Downtrend with volume confirmation", "color": "red"}
-    
+                "description": "Downtrend confirmed", "color": "red"}
     return {"phase": "Ranging", "emoji": "↔️", "label": "SIDEWAYS",
-            "description": "Market consolidating, wait for direction", "color": "gray"}
+            "description": "Market consolidating", "color": "gray"}
 
-def generate_entry_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """Combine A/D phase with patterns to generate entry signals."""
+def generate_signals_fast(df: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized signal generation."""
     df['signal'] = 'none'
     df['signal_strength'] = 'none'
     
-    for idx, row in df.iterrows():
-        phase = row.get('phase', 'neutral')
-        pattern = row.get('candlestick_pattern', 'NO_PATTERN')
-        direction = row.get('pattern_direction', 'neutral')
-        
-        if pattern == 'NO_PATTERN':
-            continue
-            
-        # Strong signals: Phase + matching pattern direction
-        if phase == 'accumulation' and direction == 'bullish':
-            df.loc[idx, 'signal'] = 'strong_buy'
-            df.loc[idx, 'signal_strength'] = 'STRONG BUY ⭐🟢'
-        elif phase == 'distribution' and direction == 'bearish':
-            df.loc[idx, 'signal'] = 'strong_sell'
-            df.loc[idx, 'signal_strength'] = 'STRONG SELL ⭐🔴'
-        # Weak signals: Trend + matching pattern
-        elif phase == 'uptrend' and direction == 'bullish':
-            df.loc[idx, 'signal'] = 'weak_buy'
-            df.loc[idx, 'signal_strength'] = 'BUY 🟢'
-        elif phase == 'downtrend' and direction == 'bearish':
-            df.loc[idx, 'signal'] = 'weak_sell'
-            df.loc[idx, 'signal_strength'] = 'SELL 🔴'
-        # Contrarian signals (caution)
-        elif phase == 'distribution' and direction == 'bullish':
-            df.loc[idx, 'signal'] = 'caution_buy'
-            df.loc[idx, 'signal_strength'] = 'CAUTION BUY ⚠️'
-        elif phase == 'accumulation' and direction == 'bearish':
-            df.loc[idx, 'signal'] = 'caution_sell'
-            df.loc[idx, 'signal_strength'] = 'CAUTION SELL ⚠️'
+    # Vectorized conditions
+    has_pattern = df['candlestick_pattern'] != 'NO_PATTERN'
+    is_bullish = df['pattern_direction'] == 'bullish'
+    is_bearish = df['pattern_direction'] == 'bearish'
+    is_accum = df['phase'] == 'accumulation'
+    is_distrib = df['phase'] == 'distribution'
+    is_uptrend = df['phase'] == 'uptrend'
+    is_downtrend = df['phase'] == 'downtrend'
+    
+    df.loc[has_pattern & is_accum & is_bullish, 'signal'] = 'strong_buy'
+    df.loc[has_pattern & is_accum & is_bullish, 'signal_strength'] = 'STRONG BUY ⭐🟢'
+    df.loc[has_pattern & is_distrib & is_bearish, 'signal'] = 'strong_sell'
+    df.loc[has_pattern & is_distrib & is_bearish, 'signal_strength'] = 'STRONG SELL ⭐🔴'
+    df.loc[has_pattern & is_uptrend & is_bullish, 'signal'] = 'weak_buy'
+    df.loc[has_pattern & is_uptrend & is_bullish, 'signal_strength'] = 'BUY 🟢'
+    df.loc[has_pattern & is_downtrend & is_bearish, 'signal'] = 'weak_sell'
+    df.loc[has_pattern & is_downtrend & is_bearish, 'signal_strength'] = 'SELL 🔴'
     
     return df
 
-def get_phase_zones(df: pd.DataFrame) -> list:
-    """Identify contiguous phase zones for chart overlay."""
-    zones = []
+def get_phase_zones_fast(df: pd.DataFrame) -> list:
+    """Optimized zone detection using numpy."""
     if df.empty or 'phase' not in df.columns:
+        return []
+    
+    zones = []
+    phase_mask = df['phase'].isin(['accumulation', 'distribution'])
+    
+    if not phase_mask.any():
         return zones
     
-    current_phase = None
-    zone_start = None
+    # Find zone boundaries using diff
+    df_filtered = df[phase_mask].copy()
+    if df_filtered.empty:
+        return zones
     
-    for idx, row in df.iterrows():
-        phase = row['phase']
-        if phase in ['accumulation', 'distribution']:
-            if phase != current_phase:
-                if current_phase is not None:
-                    zones.append({
-                        'phase': current_phase,
-                        'start': zone_start,
-                        'end': df.loc[idx-1, 'timestamp'] if idx > 0 else row['timestamp'],
-                        'start_price': df.loc[zone_start_idx, 'low'],
-                        'end_price': df.loc[idx-1, 'high'] if idx > 0 else row['high']
-                    })
-                current_phase = phase
-                zone_start = row['timestamp']
-                zone_start_idx = idx
-        else:
-            if current_phase is not None:
-                zones.append({
-                    'phase': current_phase,
-                    'start': zone_start,
-                    'end': df.loc[idx-1, 'timestamp'] if idx > 0 else row['timestamp'],
-                    'start_price': df.loc[zone_start_idx, 'low'],
-                    'end_price': df.loc[idx-1, 'high'] if idx > 0 else row['high']
-                })
-                current_phase = None
+    # Group consecutive same phases
+    df_filtered['group'] = (df_filtered['phase'] != df_filtered['phase'].shift()).cumsum()
     
-    # Close final zone if exists
-    if current_phase is not None:
+    for _, group in df_filtered.groupby('group'):
         zones.append({
-            'phase': current_phase,
-            'start': zone_start,
-            'end': df.iloc[-1]['timestamp'],
-            'start_price': df.loc[zone_start_idx, 'low'],
-            'end_price': df.iloc[-1]['high']
+            'phase': group['phase'].iloc[0],
+            'start': group['timestamp'].iloc[0],
+            'end': group['timestamp'].iloc[-1],
         })
     
-    return zones
+    return zones[-10:]  # Limit to last 10 zones for chart performance
 
-def get_watchlist_status(symbols: list, interval: str = '1wk', lookback: int = 52) -> list:
-    """Get A/D status for all watchlist symbols."""
+def fetch_symbol_status(symbol: str, interval: str, lookback: int) -> dict:
+    """Fetch status for a single symbol - used in parallel."""
+    try:
+        df = fetch_data_light(symbol, interval)
+        if df.empty:
+            return {'symbol': symbol, 'status': '❓', 'phase': 'No Data', 'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❓'}
+        
+        phase, _, df = analyze_ad_phase_fast(df, lookback)
+        wyckoff = detect_wyckoff_fast(df, lookback)
+        
+        last_price = df.iloc[-1]['close']
+        prev_price = df.iloc[-2]['close'] if len(df) > 1 else last_price
+        pct_change = ((last_price - prev_price) / prev_price) * 100
+        
+        status_map = {'accumulation': '🟢', 'distribution': '🔴', 'uptrend': '📈', 'downtrend': '📉', 'neutral': '⚪'}
+        
+        return {
+            'symbol': symbol,
+            'status': status_map.get(phase, '⚪'),
+            'phase': phase.title(),
+            'wyckoff': wyckoff['label'],
+            'wyckoff_emoji': wyckoff['emoji'],
+            'price': last_price,
+            'change': pct_change
+        }
+    except:
+        return {'symbol': symbol, 'status': '❌', 'phase': 'Error', 'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❌'}
+
+def get_watchlist_status_parallel(symbols: list, interval: str = '1wk', lookback: int = 52) -> list:
+    """Fetch watchlist status in parallel for speed."""
     results = []
-    for symbol in symbols:
-        try:
-            df = fetch_data(symbol, interval)
-            if df.empty:
-                results.append({'symbol': symbol, 'status': '❓', 'phase': 'No Data', 'price': 0, 'change': 0})
-                continue
-            
-            phase, color, df = analyze_ad_phase(df, lookback)
-            wyckoff = detect_wyckoff_phase(df, lookback)
-            
-            last_price = df.iloc[-1]['close']
-            prev_price = df.iloc[-2]['close'] if len(df) > 1 else last_price
-            pct_change = ((last_price - prev_price) / prev_price) * 100
-            
-            status_map = {
-                'accumulation': '🟢',
-                'distribution': '🔴',
-                'uptrend': '📈',
-                'downtrend': '📉',
-                'neutral': '⚪'
-            }
-            
-            results.append({
-                'symbol': symbol,
-                'status': status_map.get(phase, '⚪'),
-                'phase': phase.title(),
-                'wyckoff': wyckoff['label'],
-                'wyckoff_emoji': wyckoff['emoji'],
-                'price': last_price,
-                'change': pct_change
-            })
-        except Exception as e:
-            results.append({'symbol': symbol, 'status': '❌', 'phase': 'Error', 'price': 0, 'change': 0})
-    
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_symbol_status, sym, interval, lookback): sym for sym in symbols}
+        for future in as_completed(futures):
+            results.append(future.result())
+    # Sort to maintain original order
+    symbol_order = {sym: i for i, sym in enumerate(symbols)}
+    results.sort(key=lambda x: symbol_order.get(x['symbol'], 999))
     return results
 
 # --- UI ---
 st.title("🕯️ Crypto Pattern Watcher")
 st.caption("Long-term A/D Analysis | Multi-Asset Watchlist | Entry Signals | Simplified Wyckoff")
 
-# Sidebar - Settings
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # Analysis Mode Selection
     analysis_mode = st.radio(
         "Analysis Mode",
         ["📊 Single Asset", "📋 Watchlist Dashboard", "🔄 Timeframe Compare"],
@@ -328,17 +310,8 @@ with st.sidebar:
         symbol = st.text_input("Symbol", value="BTC-USD").upper()
         interval = st.selectbox("Timeframe", ["1d", "1wk"], format_func=lambda x: "Daily" if x == "1d" else "Weekly")
         
-        lookback_presets = {
-            "Short-Term (10 bars)": 10,
-            "Mid-Term (26 bars)": 26,
-            "Long-Term (52 bars)": 52
-        }
-        lookback_selection = st.selectbox(
-            "Lookback Period",
-            options=list(lookback_presets.keys()),
-            index=2,
-            help="How many bars to compare for divergence detection."
-        )
+        lookback_presets = {"Short (10)": 10, "Mid (26)": 26, "Long (52)": 52}
+        lookback_selection = st.selectbox("Lookback", options=list(lookback_presets.keys()), index=2)
         lookback_period = lookback_presets[lookback_selection]
         
         analyze_btn = st.button("🚀 Analyze", use_container_width=True, type="primary")
@@ -353,11 +326,11 @@ with st.sidebar:
                     st.session_state.watchlist.append(new_symbol.upper())
                     st.rerun()
         with col2:
-            if st.button("🗑️ Clear All", use_container_width=True):
+            if st.button("🗑️ Clear", use_container_width=True):
                 st.session_state.watchlist = []
                 st.rerun()
         
-        st.caption("Current watchlist:")
+        st.caption(f"Watchlist ({len(st.session_state.watchlist)}):")
         for i, sym in enumerate(st.session_state.watchlist):
             col1, col2 = st.columns([3, 1])
             col1.write(sym)
@@ -365,326 +338,233 @@ with st.sidebar:
                 st.session_state.watchlist.remove(sym)
                 st.rerun()
         
-        refresh_btn = st.button("🔄 Refresh Dashboard", use_container_width=True, type="primary")
+        refresh_btn = st.button("🔄 Refresh", use_container_width=True, type="primary")
     
-    else:  # Timeframe Compare
+    else:
         symbol = st.text_input("Symbol", value="BTC-USD").upper()
-        compare_btn = st.button("🔄 Compare Timeframes", use_container_width=True, type="primary")
+        compare_btn = st.button("🔄 Compare", use_container_width=True, type="primary")
 
 # --- Main Content ---
 
-# Single Asset Analysis
+# Single Asset
 if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_btn:
     with st.spinner(f"Analyzing {symbol}..."):
-        df = fetch_data(symbol, interval)
+        df = fetch_data(symbol, interval, limit_bars=400)
     
     if not df.empty:
-        # Run all analyses
-        df = detect_patterns(df)
-        phase, color, df = analyze_ad_phase(df, lookback=lookback_period)
-        df = generate_entry_signals(df)
-        wyckoff = detect_wyckoff_phase(df, lookback_period)
-        zones = get_phase_zones(df)
+        df = detect_patterns_optimized(df)
+        phase, color, df = analyze_ad_phase_fast(df, lookback=lookback_period)
+        df = generate_signals_fast(df)
+        wyckoff = detect_wyckoff_fast(df, lookback_period)
+        zones = get_phase_zones_fast(df)
         
-        # Header metrics
+        # Metrics
         last = df.iloc[-1]
         prev = df.iloc[-2]
         pct_change = ((last['close'] - prev['close']) / prev['close']) * 100
         
         col1, col2, col3, col4 = st.columns(4)
         col1.metric(f"{symbol}", f"${last['close']:,.2f}", f"{pct_change:+.2f}%")
-        col2.metric("Market Phase", phase.title(), delta=None)
-        col3.metric("Wyckoff", wyckoff['phase'], delta=None)
-        col4.metric("Outlook", wyckoff['label'], delta=None)
+        col2.metric("Phase", phase.title())
+        col3.metric("Wyckoff", wyckoff['phase'])
+        col4.metric("Outlook", wyckoff['label'])
         
-        # Wyckoff Explanation Card
-        with st.expander(f"{wyckoff['emoji']} **{wyckoff['phase']}** - What This Means for You", expanded=True):
-            st.markdown(f"""
-            ### {wyckoff['label']}
-            
-            {wyckoff['description']}
-            
-            **For Long-Term Investors:**
-            """)
+        # Wyckoff Card
+        with st.expander(f"{wyckoff['emoji']} {wyckoff['phase']} - What This Means", expanded=True):
+            st.markdown(f"### {wyckoff['label']}\n\n{wyckoff['description']}")
             if wyckoff['color'] == 'green':
-                st.success("✅ This is generally a favorable environment for accumulating positions.")
+                st.success("✅ Favorable for accumulating positions")
             elif wyckoff['color'] == 'red':
-                st.error("⚠️ Consider taking profits or waiting for better entry points.")
+                st.error("⚠️ Consider taking profits or waiting")
             else:
-                st.info("⏳ Market is consolidating. Wait for clearer direction before acting.")
+                st.info("⏳ Wait for clearer direction")
         
-        # Main Chart with Phase Zones
+        # Price Chart with Zones
         st.subheader("📈 Price Chart with A/D Zones")
         fig = go.Figure()
         
-        # Add phase zones as background shapes
         for zone in zones:
             zone_color = 'rgba(0, 255, 0, 0.1)' if zone['phase'] == 'accumulation' else 'rgba(255, 0, 0, 0.1)'
-            fig.add_vrect(
-                x0=zone['start'], x1=zone['end'],
-                fillcolor=zone_color,
-                layer="below",
-                line_width=0,
-                annotation_text=zone['phase'].title(),
-                annotation_position="top left",
-                annotation_font_size=10
-            )
+            fig.add_vrect(x0=zone['start'], x1=zone['end'], fillcolor=zone_color, layer="below", line_width=0)
         
-        # Candlestick
+        # Limit chart data for performance
+        chart_df = df.tail(200)
         fig.add_trace(go.Candlestick(
-            x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-            name=symbol, increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+            x=chart_df['timestamp'], open=chart_df['open'], high=chart_df['high'], 
+            low=chart_df['low'], close=chart_df['close'], name=symbol,
+            increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
         ))
         
-        # Entry signal markers
-        strong_buys = df[df['signal'] == 'strong_buy']
-        strong_sells = df[df['signal'] == 'strong_sell']
+        # Entry signals
+        strong_buys = chart_df[chart_df['signal'] == 'strong_buy']
+        strong_sells = chart_df[chart_df['signal'] == 'strong_sell']
         
         if not strong_buys.empty:
             fig.add_trace(go.Scatter(
                 x=strong_buys['timestamp'], y=strong_buys['low'] * 0.97,
-                mode='markers+text', name='Strong Buy',
-                marker=dict(color='lime', size=15, symbol='star'),
-                text='⭐', textposition='bottom center',
-                hovertemplate='%{x}<br>STRONG BUY<br>Pattern: %{customdata}<extra></extra>',
-                customdata=strong_buys['candlestick_pattern']
+                mode='markers', name='Strong Buy',
+                marker=dict(color='lime', size=12, symbol='star'),
+                hovertemplate='STRONG BUY<extra></extra>'
             ))
         
         if not strong_sells.empty:
             fig.add_trace(go.Scatter(
                 x=strong_sells['timestamp'], y=strong_sells['high'] * 1.03,
-                mode='markers+text', name='Strong Sell',
-                marker=dict(color='red', size=15, symbol='star'),
-                text='⭐', textposition='top center',
-                hovertemplate='%{x}<br>STRONG SELL<br>Pattern: %{customdata}<extra></extra>',
-                customdata=strong_sells['candlestick_pattern']
+                mode='markers', name='Strong Sell',
+                marker=dict(color='red', size=12, symbol='star'),
+                hovertemplate='STRONG SELL<extra></extra>'
             ))
         
-        fig.update_layout(
-            height=500, xaxis_rangeslider_visible=False,
-            title=f"{symbol} - {interval.upper()} Chart with A/D Zones",
-            dragmode='pan', template='plotly_dark'
-        )
+        fig.update_layout(height=450, xaxis_rangeslider_visible=False, template='plotly_dark', dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
         
-        # A/D Line Chart with Explanation
+        # A/D Chart
         st.subheader("💰 Money Flow (A/D Line)")
         
-        # Calculate A/D trend for interpretation
         ad_recent = df.tail(lookback_period)
-        ad_start = ad_recent['ad'].iloc[0]
-        ad_end = ad_recent['ad'].iloc[-1]
-        ad_trend = ad_end - ad_start
-        ad_trend_pct = (ad_trend / abs(ad_start)) * 100 if ad_start != 0 else 0
+        ad_trend = ad_recent['ad'].iloc[-1] - ad_recent['ad'].iloc[0]
+        ad_trend_pct = (ad_trend / abs(ad_recent['ad'].iloc[0])) * 100 if ad_recent['ad'].iloc[0] != 0 else 0
         
-        # Interpretation box
         col1, col2, col3 = st.columns(3)
         with col1:
-            trend_icon = "📈" if ad_trend > 0 else "📉"
-            trend_label = "Money Flowing IN" if ad_trend > 0 else "Money Flowing OUT"
-            st.metric("Current Trend", f"{trend_icon} {trend_label}")
+            st.metric("Trend", f"{'📈 IN' if ad_trend > 0 else '📉 OUT'}")
         with col2:
-            st.metric("A/D Change", f"{ad_trend_pct:+.1f}%", delta=f"Last {lookback_period} bars")
+            st.metric("A/D Change", f"{ad_trend_pct:+.1f}%")
         with col3:
-            # Compare with price to detect divergence
-            price_change = df['close'].iloc[-1] - df['close'].iloc[-lookback_period] if len(df) > lookback_period else 0
-            if price_change < 0 and ad_trend > 0:
-                st.success("🔍 **Bullish Divergence** (Price ↓ but Money ↑)")
-            elif price_change > 0 and ad_trend < 0:
-                st.error("🔍 **Bearish Divergence** (Price ↑ but Money ↓)")
+            price_chg = df['close'].iloc[-1] - df['close'].iloc[-lookback_period] if len(df) > lookback_period else 0
+            if price_chg < 0 and ad_trend > 0:
+                st.success("🔍 Bullish Divergence")
+            elif price_chg > 0 and ad_trend < 0:
+                st.error("🔍 Bearish Divergence")
             else:
-                st.info("🔍 **No Divergence** (Price & Money aligned)")
+                st.info("🔍 Aligned")
         
-        # Build enhanced A/D chart
+        ad_chart_df = df.tail(200)
         ad_fig = go.Figure()
-        
-        # A/D line with fill
-        ad_fig.add_trace(go.Scatter(
-            x=df['timestamp'], y=df['ad'], 
-            name='A/D Line', 
-            line=dict(color='orange', width=2),
-            fill='tozeroy',
-            fillcolor='rgba(255, 165, 0, 0.1)'
-        ))
-        ad_fig.add_trace(go.Scatter(
-            x=df['timestamp'], y=df['ad_ema'], 
-            name='EMA 21 (Trend)', 
-            line=dict(color='yellow', dash='dot', width=1.5)
-        ))
-        
-        # Add zero line for reference
-        ad_fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-        
-        # Add annotations for key points
-        ad_fig.update_layout(
-            height=350, 
-            template='plotly_dark', 
-            title="Accumulation/Distribution Line",
-            yaxis_title="A/D Value",
-            xaxis_title="Date",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
+        ad_fig.add_trace(go.Scatter(x=ad_chart_df['timestamp'], y=ad_chart_df['ad'], name='A/D Line', 
+                                    line=dict(color='orange', width=2), fill='tozeroy', fillcolor='rgba(255,165,0,0.1)'))
+        ad_fig.add_trace(go.Scatter(x=ad_chart_df['timestamp'], y=ad_chart_df['ad_ema'], name='EMA 21', 
+                                    line=dict(color='yellow', dash='dot', width=1)))
+        ad_fig.update_layout(height=250, template='plotly_dark')
         st.plotly_chart(ad_fig, use_container_width=True, config={'scrollZoom': True})
         
-        # Explanation
-        with st.expander("📖 How to Read This Chart", expanded=False):
+        with st.expander("📖 How to Read"):
             st.markdown("""
-            ### What is the A/D Line?
-            The **Accumulation/Distribution Line** tracks whether money is flowing INTO or OUT OF an asset.
-            
-            | Signal | What It Means |
-            |--------|---------------|
-            | **Line Rising** 📈 | More buying pressure (accumulation) |
-            | **Line Falling** 📉 | More selling pressure (distribution) |
-            | **Above EMA** | Money flow is stronger than average |
-            | **Below EMA** | Money flow is weaker than average |
-            
-            ### Key Divergences (Most Important!)
-            
-            | Divergence | Meaning | Action |
-            |------------|---------|--------|
-            | **Price ↓ but A/D ↑** | Smart money buying while price drops | 🟢 **Bullish** - Consider accumulating |
-            | **Price ↑ but A/D ↓** | Smart money selling while price rises | 🔴 **Bearish** - Consider taking profits |
-            
-            > 💡 **For Long-Term Investors:** Focus on divergences! When price is falling but A/D is rising, it often signals a good accumulation opportunity.
-            """)
+**A/D Line Rising** = Money flowing IN (bullish) | **Falling** = OUT (bearish)
 
+**Divergences (key signals):**
+- Price ↓ but A/D ↑ = 🟢 Bullish - accumulate
+- Price ↑ but A/D ↓ = 🔴 Bearish - take profits
+            """)
         
-        # Signal History Table
-        st.subheader("📊 Recent Entry Signals")
+        # Signals Table
+        st.subheader("📊 Recent Signals")
         signals = df[df['signal'] != 'none'].tail(10).sort_values('timestamp', ascending=False)
         if not signals.empty:
-            display_df = signals[['timestamp', 'close', 'candlestick_pattern', 'phase', 'signal_strength']].copy()
-            display_df.columns = ['Date', 'Price', 'Pattern', 'Phase', 'Signal']
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(signals[['timestamp', 'close', 'candlestick_pattern', 'phase', 'signal_strength']].rename(
+                columns={'timestamp': 'Date', 'close': 'Price', 'candlestick_pattern': 'Pattern', 'phase': 'Phase', 'signal_strength': 'Signal'}
+            ), use_container_width=True, hide_index=True)
         else:
-            st.info("No entry signals detected in the visible range.")
-        
-        with st.expander("View Raw Data"):
-            st.dataframe(df, use_container_width=True)
+            st.info("No signals in visible range")
     else:
-        st.error(f"Could not load data for {symbol}.")
+        st.error(f"Could not load {symbol}")
 
-# Watchlist Dashboard
+# Watchlist
 elif analysis_mode == "📋 Watchlist Dashboard":
     st.subheader("📋 Watchlist Dashboard")
     
     if not st.session_state.watchlist:
-        st.info("Your watchlist is empty. Add symbols using the sidebar.")
-    else:
-        if 'refresh_btn' in dir() and refresh_btn:
-            with st.spinner("Fetching data for all assets..."):
-                watchlist_data = get_watchlist_status(st.session_state.watchlist)
-            
-            # Summary cards
-            accum_count = sum(1 for w in watchlist_data if w['phase'] == 'Accumulation')
-            distrib_count = sum(1 for w in watchlist_data if w['phase'] == 'Distribution')
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("🟢 In Accumulation", accum_count)
-            col2.metric("🔴 In Distribution", distrib_count)
-            col3.metric("Total Assets", len(watchlist_data))
-            
+        st.info("Watchlist empty. Add symbols via sidebar.")
+    elif 'refresh_btn' in dir() and refresh_btn:
+        with st.spinner("Fetching data (parallel)..."):
+            data = get_watchlist_status_parallel(st.session_state.watchlist)
+        
+        accum = sum(1 for w in data if w['phase'] == 'Accumulation')
+        distrib = sum(1 for w in data if w['phase'] == 'Distribution')
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🟢 Accumulation", accum)
+        col2.metric("🔴 Distribution", distrib)
+        col3.metric("Total", len(data))
+        
+        st.divider()
+        
+        for item in data:
+            cols = st.columns([2, 1, 2, 2, 1])
+            cols[0].markdown(f"**{item['status']} {item['symbol']}**")
+            cols[1].write(f"${item['price']:,.0f}" if item['price'] > 0 else "N/A")
+            cols[2].write(item['phase'])
+            cols[3].write(f"{item['wyckoff_emoji']} {item['wyckoff']}")
+            color = "green" if item['change'] > 0 else "red"
+            cols[4].markdown(f"<span style='color:{color}'>{item['change']:+.1f}%</span>", unsafe_allow_html=True)
             st.divider()
-            
-            # Watchlist table
-            for item in watchlist_data:
-                with st.container():
-                    col1, col2, col3, col4, col5 = st.columns([2, 1, 2, 2, 1])
-                    col1.markdown(f"### {item['status']} {item['symbol']}")
-                    col2.metric("Price", f"${item['price']:,.2f}" if item['price'] > 0 else "N/A")
-                    col3.metric("Phase", item['phase'])
-                    col4.metric("Wyckoff", f"{item.get('wyckoff_emoji', '')} {item.get('wyckoff', 'N/A')}")
-                    change_color = "green" if item['change'] > 0 else "red"
-                    col5.markdown(f"<span style='color:{change_color}'>{item['change']:+.2f}%</span>", unsafe_allow_html=True)
-                st.divider()
-        else:
-            st.info("👆 Click 'Refresh Dashboard' to load watchlist data.")
+    else:
+        st.info("👆 Click 'Refresh' to load data")
 
-# Timeframe Comparison
+# Timeframe Compare
 elif analysis_mode == "🔄 Timeframe Compare":
-    st.subheader(f"🔄 Timeframe Comparison: {symbol}")
+    st.subheader(f"🔄 {symbol} - Daily vs Weekly")
     
     if 'compare_btn' in dir() and compare_btn:
-        with st.spinner("Fetching daily and weekly data..."):
-            df_daily = fetch_data(symbol, '1d')
-            df_weekly = fetch_data(symbol, '1wk')
+        with st.spinner("Loading..."):
+            df_d = fetch_data(symbol, '1d', 200)
+            df_w = fetch_data(symbol, '1wk', 100)
         
-        if not df_daily.empty and not df_weekly.empty:
-            # Analyze both timeframes
-            phase_daily, _, df_daily = analyze_ad_phase(df_daily, 26)
-            phase_weekly, _, df_weekly = analyze_ad_phase(df_weekly, 52)
-            wyckoff_daily = detect_wyckoff_phase(df_daily, 26)
-            wyckoff_weekly = detect_wyckoff_phase(df_weekly, 52)
+        if not df_d.empty and not df_w.empty:
+            phase_d, _, df_d = analyze_ad_phase_fast(df_d, 26)
+            phase_w, _, df_w = analyze_ad_phase_fast(df_w, 52)
+            wyck_d = detect_wyckoff_fast(df_d, 26)
+            wyck_w = detect_wyckoff_fast(df_w, 52)
             
-            # Alignment check
-            st.subheader("📊 Timeframe Alignment")
+            daily_bull = phase_d in ['accumulation', 'uptrend']
+            weekly_bull = phase_w in ['accumulation', 'uptrend']
             
-            daily_bullish = phase_daily in ['accumulation', 'uptrend']
-            weekly_bullish = phase_weekly in ['accumulation', 'uptrend']
-            
-            if daily_bullish and weekly_bullish:
-                st.success("✅ **STRONG BUY ZONE** - Both Daily and Weekly are bullish. High confidence for long-term entry.")
-            elif not daily_bullish and not weekly_bullish:
-                st.error("🔴 **STRONG SELL ZONE** - Both Daily and Weekly are bearish. Consider waiting or taking profits.")
+            if daily_bull and weekly_bull:
+                st.success("✅ **STRONG BUY ZONE** - Both timeframes bullish")
+            elif not daily_bull and not weekly_bull:
+                st.error("🔴 **STRONG SELL ZONE** - Both bearish")
             else:
-                st.warning("⚠️ **CAUTION** - Timeframes are not aligned. Wait for confirmation before acting.")
+                st.warning("⚠️ **CAUTION** - Timeframes not aligned")
             
-            # Side by side metrics
             col1, col2 = st.columns(2)
-            
             with col1:
                 st.markdown("### 📅 Daily")
-                st.metric("Phase", phase_daily.title())
-                st.metric("Wyckoff", f"{wyckoff_daily['emoji']} {wyckoff_daily['label']}")
-                st.caption(wyckoff_daily['description'])
-            
+                st.metric("Phase", phase_d.title())
+                st.caption(wyck_d['description'])
             with col2:
                 st.markdown("### 📆 Weekly")
-                st.metric("Phase", phase_weekly.title())
-                st.metric("Wyckoff", f"{wyckoff_weekly['emoji']} {wyckoff_weekly['label']}")
-                st.caption(wyckoff_weekly['description'])
+                st.metric("Phase", phase_w.title())
+                st.caption(wyck_w['description'])
             
-            # Stacked charts
-            st.subheader("📈 Daily vs Weekly Charts")
+            fig = make_subplots(rows=2, cols=1, subplot_titles=("Daily (90d)", "Weekly (1y)"), vertical_spacing=0.12)
             
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=False, 
-                               subplot_titles=("Daily", "Weekly"),
-                               vertical_spacing=0.1)
-            
-            # Daily candlestick
             fig.add_trace(go.Candlestick(
-                x=df_daily.tail(90)['timestamp'], 
-                open=df_daily.tail(90)['open'], high=df_daily.tail(90)['high'],
-                low=df_daily.tail(90)['low'], close=df_daily.tail(90)['close'],
-                name='Daily', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+                x=df_d.tail(90)['timestamp'], open=df_d.tail(90)['open'], high=df_d.tail(90)['high'],
+                low=df_d.tail(90)['low'], close=df_d.tail(90)['close'], name='Daily',
+                increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=1, col=1)
             
-            # Weekly candlestick
             fig.add_trace(go.Candlestick(
-                x=df_weekly.tail(52)['timestamp'],
-                open=df_weekly.tail(52)['open'], high=df_weekly.tail(52)['high'],
-                low=df_weekly.tail(52)['low'], close=df_weekly.tail(52)['close'],
-                name='Weekly', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+                x=df_w.tail(52)['timestamp'], open=df_w.tail(52)['open'], high=df_w.tail(52)['high'],
+                low=df_w.tail(52)['low'], close=df_w.tail(52)['close'], name='Weekly',
+                increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=2, col=1)
             
-            fig.update_layout(height=700, template='plotly_dark', showlegend=False)
+            fig.update_layout(height=600, template='plotly_dark', showlegend=False)
             fig.update_xaxes(rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
         else:
-            st.error(f"Could not load data for {symbol}.")
+            st.error(f"Could not load {symbol}")
     else:
-        st.info("👆 Click 'Compare Timeframes' to analyze Daily vs Weekly.")
+        st.info("👆 Click 'Compare' to analyze")
 
-# Default state
+# Default
 if analysis_mode == "📊 Single Asset" and ('analyze_btn' not in dir() or not analyze_btn):
     st.info("""
-    👈 **Select an analysis mode from the sidebar:**
-    
-    - **Single Asset**: Deep analysis of one symbol with A/D zones, Wyckoff phases, and entry signals
-    - **Watchlist Dashboard**: Quick overview of multiple assets at a glance
-    - **Timeframe Compare**: See if Daily and Weekly charts are aligned
-    
-    **Pro Tip for Long-Term Investors:**
-    Focus on weekly charts and look for Accumulation phases. When both Daily AND Weekly show accumulation, it's often a high-confidence entry zone.
+👈 **Select mode:**
+- **Single Asset**: Full analysis with zones & signals
+- **Watchlist**: Quick overview of multiple assets  
+- **Timeframe Compare**: Daily vs Weekly alignment
+
+**Tip:** Focus on weekly charts. When both Daily AND Weekly show accumulation = high confidence entry.
     """)
