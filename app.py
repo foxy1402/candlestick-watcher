@@ -70,9 +70,8 @@ def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
     except Exception as e:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch for watchlist - same as full fetch, cached separately."""
+def fetch_data_raw(symbol: str, interval: str) -> pd.DataFrame:
+    """Fetch data WITHOUT cache - for use in parallel threads where st.cache doesn't work."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
         df = yf.download(ticker, period="max", interval=interval, progress=False)
@@ -84,11 +83,12 @@ def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
         df.columns = [c.lower() for c in df.columns]
         if 'date' in df.columns:
             df.rename(columns={'date': 'timestamp'}, inplace=True)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
         return df
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
 def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
@@ -390,7 +390,7 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
 def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int) -> dict:
     """Fetch comprehensive investment data for a single symbol."""
     try:
-        df = fetch_data_light(symbol, interval)
+        df = fetch_data_raw(symbol, interval)
         if df.empty:
             return {
                 'symbol': symbol, 'status': '❓', 'phase': 'No Data', 
