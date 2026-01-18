@@ -72,10 +72,9 @@ def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
-    """Lightweight fetch for watchlist - uses cached full data."""
+    """Fetch for watchlist - same as full fetch, cached separately."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        # Still use max for full history, but analysis uses tail
         df = yf.download(ticker, period="max", interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
@@ -88,8 +87,7 @@ def fetch_data_light(symbol: str, interval: str) -> pd.DataFrame:
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
-        # Return last 150 bars for watchlist analysis (enough for lookback)
-        return df.tail(150).reset_index(drop=True)
+        return df
     except:
         return pd.DataFrame()
 
@@ -247,7 +245,7 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
             'end': group['timestamp'].iloc[-1],
         })
     
-    return zones[-10:]  # Limit to last 10 zones for chart performance
+    return zones  # Return all zones
 
 def fetch_symbol_status(symbol: str, interval: str, lookback: int) -> dict:
     """Fetch status for a single symbol - used in parallel."""
@@ -386,17 +384,16 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             zone_color = 'rgba(0, 255, 0, 0.1)' if zone['phase'] == 'accumulation' else 'rgba(255, 0, 0, 0.1)'
             fig.add_vrect(x0=zone['start'], x1=zone['end'], fillcolor=zone_color, layer="below", line_width=0)
         
-        # Limit chart data for performance
-        chart_df = df.tail(200)
+        # Full chart data - no limits
         fig.add_trace(go.Candlestick(
-            x=chart_df['timestamp'], open=chart_df['open'], high=chart_df['high'], 
-            low=chart_df['low'], close=chart_df['close'], name=symbol,
+            x=df['timestamp'], open=df['open'], high=df['high'], 
+            low=df['low'], close=df['close'], name=symbol,
             increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
         ))
         
-        # Entry signals
-        strong_buys = chart_df[chart_df['signal'] == 'strong_buy']
-        strong_sells = chart_df[chart_df['signal'] == 'strong_sell']
+        # Entry signals - full data
+        strong_buys = df[df['signal'] == 'strong_buy']
+        strong_sells = df[df['signal'] == 'strong_sell']
         
         if not strong_buys.empty:
             fig.add_trace(go.Scatter(
@@ -438,11 +435,11 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             else:
                 st.info("🔍 Aligned")
         
-        ad_chart_df = df.tail(200)
+        # A/D chart - full data
         ad_fig = go.Figure()
-        ad_fig.add_trace(go.Scatter(x=ad_chart_df['timestamp'], y=ad_chart_df['ad'], name='A/D Line', 
+        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='A/D Line', 
                                     line=dict(color='orange', width=2), fill='tozeroy', fillcolor='rgba(255,165,0,0.1)'))
-        ad_fig.add_trace(go.Scatter(x=ad_chart_df['timestamp'], y=ad_chart_df['ad_ema'], name='EMA 21', 
+        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', 
                                     line=dict(color='yellow', dash='dot', width=1)))
         ad_fig.update_layout(height=250, template='plotly_dark')
         st.plotly_chart(ad_fig, use_container_width=True, config={'scrollZoom': True})
@@ -535,17 +532,17 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Phase", phase_w.title())
                 st.caption(wyck_w['description'])
             
-            fig = make_subplots(rows=2, cols=1, subplot_titles=("Daily (90d)", "Weekly (1y)"), vertical_spacing=0.12)
+            fig = make_subplots(rows=2, cols=1, subplot_titles=("Daily", "Weekly"), vertical_spacing=0.12)
             
             fig.add_trace(go.Candlestick(
-                x=df_d.tail(90)['timestamp'], open=df_d.tail(90)['open'], high=df_d.tail(90)['high'],
-                low=df_d.tail(90)['low'], close=df_d.tail(90)['close'], name='Daily',
+                x=df_d['timestamp'], open=df_d['open'], high=df_d['high'],
+                low=df_d['low'], close=df_d['close'], name='Daily',
                 increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=1, col=1)
             
             fig.add_trace(go.Candlestick(
-                x=df_w.tail(52)['timestamp'], open=df_w.tail(52)['open'], high=df_w.tail(52)['high'],
-                low=df_w.tail(52)['low'], close=df_w.tail(52)['close'], name='Weekly',
+                x=df_w['timestamp'], open=df_w['open'], high=df_w['high'],
+                low=df_w['low'], close=df_w['close'], name='Weekly',
                 increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=2, col=1)
             
