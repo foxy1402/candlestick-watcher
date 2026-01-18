@@ -247,12 +247,145 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
     
     return zones  # Return all zones
 
-def fetch_symbol_status(symbol: str, interval: str, lookback: int) -> dict:
-    """Fetch status for a single symbol - used in parallel."""
+def calculate_performance_metrics(df: pd.DataFrame) -> dict:
+    """Calculate multi-period performance returns."""
+    if df.empty or len(df) < 2:
+        return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0}
+    
+    current_price = df['close'].iloc[-1]
+    
+    # 7D return
+    if len(df) >= 7:
+        price_7d = df['close'].iloc[-7]
+        ret_7d = ((current_price - price_7d) / price_7d) * 100
+    else:
+        ret_7d = 0
+    
+    # 30D return
+    if len(df) >= 30:
+        price_30d = df['close'].iloc[-30]
+        ret_30d = ((current_price - price_30d) / price_30d) * 100
+    else:
+        ret_30d = 0
+    
+    # 90D return
+    if len(df) >= 90:
+        price_90d = df['close'].iloc[-90]
+        ret_90d = ((current_price - price_90d) / price_90d) * 100
+    else:
+        ret_90d = 0
+    
+    # YTD return
+    current_year = df['timestamp'].iloc[-1].year
+    ytd_data = df[df['timestamp'].dt.year == current_year]
+    if len(ytd_data) > 1:
+        price_ytd_start = ytd_data['close'].iloc[0]
+        ret_ytd = ((current_price - price_ytd_start) / price_ytd_start) * 100
+    else:
+        ret_ytd = 0
+    
+    return {'7d': ret_7d, '30d': ret_30d, '90d': ret_90d, 'ytd': ret_ytd}
+
+def calculate_signal_strength(phase: str, wyckoff: dict, df: pd.DataFrame, lookback: int = 52) -> tuple:
+    """
+    Calculate 0-100 signal strength score.
+    Returns (score, breakdown_dict)
+    """
+    score = 50  # Start neutral
+    breakdown = {}
+    
+    # Phase score (+/-25)
+    phase_scores = {
+        'accumulation': 25, 'uptrend': 15, 'neutral': 0, 'downtrend': -15, 'distribution': -25
+    }
+    phase_score = phase_scores.get(phase, 0)
+    score += phase_score
+    breakdown['phase'] = phase_score
+    
+    # Wyckoff score (+/-20)
+    wyckoff_scores = {
+        'SMART MONEY BUYING': 20, 'TRENDING UP': 15, 'SIDEWAYS': 0,
+        'TRENDING DOWN': -15, 'SMART MONEY SELLING': -20
+    }
+    wyckoff_score = wyckoff_scores.get(wyckoff.get('label', ''), 0)
+    score += wyckoff_score
+    breakdown['wyckoff'] = wyckoff_score
+    
+    # A/D momentum score (+/-15)
+    if 'ad' in df.columns and len(df) >= lookback:
+        recent = df.tail(lookback)
+        ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
+        price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
+        
+        if price_change < 0 and ad_change > 0:  # Bullish divergence
+            ad_score = 15
+        elif price_change > 0 and ad_change < 0:  # Bearish divergence
+            ad_score = -15
+        elif ad_change > 0:
+            ad_score = 10
+        elif ad_change < 0:
+            ad_score = -10
+        else:
+            ad_score = 0
+        score += ad_score
+        breakdown['ad_momentum'] = ad_score
+    
+    # Trend strength bonus (+/-10) using simple momentum
+    if len(df) >= 20:
+        sma_20 = df['close'].tail(20).mean()
+        current = df['close'].iloc[-1]
+        if current > sma_20 * 1.05:  # 5% above SMA
+            trend_score = 10
+        elif current < sma_20 * 0.95:  # 5% below SMA
+            trend_score = -10
+        else:
+            trend_score = 0
+        score += trend_score
+        breakdown['trend'] = trend_score
+    
+    # Clamp to 0-100
+    score = max(0, min(100, score))
+    
+    return score, breakdown
+
+def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
+    """Find key support and resistance levels."""
+    if len(df) < lookback:
+        return {'support': 0, 'resistance': 0, 'entry_low': 0, 'entry_high': 0}
+    
+    recent = df.tail(lookback)
+    current_price = recent['close'].iloc[-1]
+    high = recent['high'].max()
+    low = recent['low'].min()
+    
+    # Simple pivot points
+    pivot = (high + low + current_price) / 3
+    support1 = 2 * pivot - high
+    resistance1 = 2 * pivot - low
+    
+    # Entry zone (around support)
+    entry_low = support1
+    entry_high = support1 + (pivot - support1) * 0.3
+    
+    return {
+        'support': support1,
+        'resistance': resistance1,
+        'entry_low': entry_low,
+        'entry_high': entry_high,
+        'pivot': pivot
+    }
+
+def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int) -> dict:
+    """Fetch comprehensive investment data for a single symbol."""
     try:
         df = fetch_data_light(symbol, interval)
         if df.empty:
-            return {'symbol': symbol, 'status': '❓', 'phase': 'No Data', 'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❓'}
+            return {
+                'symbol': symbol, 'status': '❓', 'phase': 'No Data', 
+                'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❓',
+                '7d': 0, '30d': 0, '90d': 0, 'ytd': 0,
+                'signal_score': 0, 'levels': {}, 'action': 'NO DATA'
+            }
         
         phase, _, df = analyze_ad_phase_fast(df, lookback)
         wyckoff = detect_wyckoff_fast(df, lookback)
@@ -260,6 +393,27 @@ def fetch_symbol_status(symbol: str, interval: str, lookback: int) -> dict:
         last_price = df.iloc[-1]['close']
         prev_price = df.iloc[-2]['close'] if len(df) > 1 else last_price
         pct_change = ((last_price - prev_price) / prev_price) * 100
+        
+        # Performance metrics
+        perf = calculate_performance_metrics(df)
+        
+        # Signal strength
+        signal_score, score_breakdown = calculate_signal_strength(phase, wyckoff, df, lookback)
+        
+        # Support/Resistance
+        levels = find_support_resistance(df, lookback)
+        
+        # Action recommendation
+        if signal_score >= 80:
+            action = '🟢 STRONG BUY'
+        elif signal_score >= 60:
+            action = '🟡 BUY'
+        elif signal_score >= 40:
+            action = '⚪ HOLD'
+        elif signal_score >= 20:
+            action = '🟠 CAUTION'
+        else:
+            action = '🔴 AVOID'
         
         status_map = {'accumulation': '🟢', 'distribution': '🔴', 'uptrend': '📈', 'downtrend': '📉', 'neutral': '⚪'}
         
@@ -269,23 +423,152 @@ def fetch_symbol_status(symbol: str, interval: str, lookback: int) -> dict:
             'phase': phase.title(),
             'wyckoff': wyckoff['label'],
             'wyckoff_emoji': wyckoff['emoji'],
+            'wyckoff_desc': wyckoff['description'],
             'price': last_price,
-            'change': pct_change
+            'change': pct_change,
+            '7d': perf['7d'],
+            '30d': perf['30d'],
+            '90d': perf['90d'],
+            'ytd': perf['ytd'],
+            'signal_score': signal_score,
+            'score_breakdown': score_breakdown,
+            'levels': levels,
+            'action': action
         }
-    except:
-        return {'symbol': symbol, 'status': '❌', 'phase': 'Error', 'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❌'}
+    except Exception as e:
+        return {
+            'symbol': symbol, 'status': '❌', 'phase': 'Error', 
+            'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❌',
+            '7d': 0, '30d': 0, '90d': 0, 'ytd': 0,
+            'signal_score': 0, 'levels': {}, 'action': 'ERROR'
+        }
 
 def get_watchlist_status_parallel(symbols: list, interval: str = '1wk', lookback: int = 52) -> list:
-    """Fetch watchlist status in parallel for speed."""
+    """Fetch enhanced watchlist status in parallel for speed."""
     results = []
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(fetch_symbol_status, sym, interval, lookback): sym for sym in symbols}
+        futures = {executor.submit(fetch_symbol_status_enhanced, sym, interval, lookback): sym for sym in symbols}
         for future in as_completed(futures):
             results.append(future.result())
     # Sort to maintain original order
     symbol_order = {sym: i for i, sym in enumerate(symbols)}
     results.sort(key=lambda x: symbol_order.get(x['symbol'], 999))
     return results
+
+def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> dict:
+    """Calculate multi-timeframe alignment score (0-100)."""
+    score = 50
+    factors = {}
+    
+    if df_daily.empty or df_weekly.empty:
+        return {'score': 0, 'factors': {}, 'recommendation': 'INSUFFICIENT DATA', 'confidence': 'LOW'}
+    
+    # Daily analysis
+    phase_d, _, df_daily = analyze_ad_phase_fast(df_daily, 26)
+    phase_w, _, df_weekly = analyze_ad_phase_fast(df_weekly, 52)
+    
+    # Phase alignment (40 points)
+    bullish_phases = ['accumulation', 'uptrend']
+    bearish_phases = ['distribution', 'downtrend']
+    
+    if phase_d in bullish_phases and phase_w in bullish_phases:
+        phase_align = 40
+    elif phase_d in bearish_phases and phase_w in bearish_phases:
+        phase_align = -40
+    elif (phase_d in bullish_phases) != (phase_w in bullish_phases):
+        phase_align = 0  # Mixed - neutral
+    else:
+        phase_align = 0
+    
+    score += phase_align // 2
+    factors['phase_alignment'] = phase_align
+    
+    # Trend direction (30 points)
+    daily_trend = 1 if df_daily['close'].iloc[-1] > df_daily['close'].iloc[-20] else -1 if len(df_daily) >= 20 else 0
+    weekly_trend = 1 if df_weekly['close'].iloc[-1] > df_weekly['close'].iloc[-10] else -1 if len(df_weekly) >= 10 else 0
+    
+    if daily_trend == weekly_trend == 1:
+        trend_align = 30
+    elif daily_trend == weekly_trend == -1:
+        trend_align = -30
+    else:
+        trend_align = 0
+    
+    score += trend_align // 2
+    factors['trend_alignment'] = trend_align
+    
+    # A/D momentum (30 points)
+    if 'ad' in df_daily.columns and 'ad' in df_weekly.columns:
+        ad_daily = df_daily['ad'].iloc[-1] - df_daily['ad'].iloc[-20] if len(df_daily) >= 20 else 0
+        ad_weekly = df_weekly['ad'].iloc[-1] - df_weekly['ad'].iloc[-10] if len(df_weekly) >= 10 else 0
+        
+        if ad_daily > 0 and ad_weekly > 0:
+            ad_align = 30
+        elif ad_daily < 0 and ad_weekly < 0:
+            ad_align = -30
+        else:
+            ad_align = 0
+        
+        score += ad_align // 2
+        factors['ad_alignment'] = ad_align
+    
+    # Clamp score
+    score = max(0, min(100, score))
+    
+    # Recommendation
+    if score >= 75:
+        rec = 'STRONG BUY ZONE'
+        conf = 'HIGH'
+    elif score >= 60:
+        rec = 'FAVORABLE ENTRY'
+        conf = 'MEDIUM-HIGH'
+    elif score >= 40:
+        rec = 'NEUTRAL - WAIT'
+        conf = 'MEDIUM'
+    elif score >= 25:
+        rec = 'UNFAVORABLE'
+        conf = 'MEDIUM'
+    else:
+        rec = 'STRONG SELL ZONE'
+        conf = 'HIGH'
+    
+    return {'score': score, 'factors': factors, 'recommendation': rec, 'confidence': conf}
+
+def calculate_trend_strength_adx(df: pd.DataFrame, period: int = 14) -> dict:
+    """Calculate ADX-based trend strength."""
+    if len(df) < period * 2:
+        return {'adx': 0, 'strength': 'INSUFFICIENT DATA', 'direction': 'neutral'}
+    
+    try:
+        adx = talib.ADX(df['high'].values, df['low'].values, df['close'].values, timeperiod=period)
+        plus_di = talib.PLUS_DI(df['high'].values, df['low'].values, df['close'].values, timeperiod=period)
+        minus_di = talib.MINUS_DI(df['high'].values, df['low'].values, df['close'].values, timeperiod=period)
+        
+        current_adx = adx[-1] if not np.isnan(adx[-1]) else 0
+        current_plus = plus_di[-1] if not np.isnan(plus_di[-1]) else 0
+        current_minus = minus_di[-1] if not np.isnan(minus_di[-1]) else 0
+        
+        # Trend strength
+        if current_adx >= 50:
+            strength = '🔥 VERY STRONG'
+        elif current_adx >= 25:
+            strength = '📈 STRONG'
+        elif current_adx >= 20:
+            strength = '↗️ MODERATE'
+        else:
+            strength = '↔️ WEAK/RANGING'
+        
+        # Direction
+        if current_plus > current_minus:
+            direction = 'bullish'
+        elif current_minus > current_plus:
+            direction = 'bearish'
+        else:
+            direction = 'neutral'
+        
+        return {'adx': current_adx, 'strength': strength, 'direction': direction, 'plus_di': current_plus, 'minus_di': current_minus}
+    except:
+        return {'adx': 0, 'strength': 'ERROR', 'direction': 'neutral'}
 
 # --- UI ---
 st.title("🕯️ Crypto Pattern Watcher")
@@ -467,88 +750,399 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
 
 # Watchlist
 elif analysis_mode == "📋 Watchlist Dashboard":
-    st.subheader("📋 Watchlist Dashboard")
+    st.subheader("📋 Investment Watchlist Dashboard")
     
     if not st.session_state.watchlist:
         st.info("Watchlist empty. Add symbols via sidebar.")
     elif 'refresh_btn' in dir() and refresh_btn:
-        with st.spinner("Fetching data (parallel)..."):
+        with st.spinner("Fetching comprehensive data..."):
             data = get_watchlist_status_parallel(st.session_state.watchlist)
         
-        accum = sum(1 for w in data if w['phase'] == 'Accumulation')
-        distrib = sum(1 for w in data if w['phase'] == 'Distribution')
+        # --- OPPORTUNITY HIGHLIGHT CARDS ---
+        st.markdown("### 🎯 Quick Insights")
+        
+        # Find best opportunity (highest score in accumulation)
+        accum_assets = [d for d in data if d['phase'] == 'Accumulation']
+        best_opp = max(accum_assets, key=lambda x: x['signal_score']) if accum_assets else None
+        
+        # Find distribution alerts
+        distrib_assets = [d for d in data if d['phase'] == 'Distribution']
+        
+        # Find top performer (best 30D return)
+        valid_data = [d for d in data if d['price'] > 0]
+        top_performer = max(valid_data, key=lambda x: x['30d']) if valid_data else None
         
         col1, col2, col3 = st.columns(3)
-        col1.metric("🟢 Accumulation", accum)
-        col2.metric("🔴 Distribution", distrib)
-        col3.metric("Total", len(data))
+        
+        with col1:
+            if best_opp:
+                st.success(f"""
+                🏆 **Best Opportunity**  
+                **{best_opp['symbol']}**  
+                Score: {best_opp['signal_score']}/100  
+                {best_opp['action']}
+                """)
+            else:
+                st.info("🏆 No accumulation opportunities found")
+        
+        with col2:
+            if distrib_assets:
+                symbols = ", ".join([d['symbol'] for d in distrib_assets[:3]])
+                st.error(f"""
+                ⚠️ **Distribution Alert**  
+                {len(distrib_assets)} asset(s) in distribution  
+                {symbols}
+                """)
+            else:
+                st.success("✅ No distribution alerts")
+        
+        with col3:
+            if top_performer and top_performer['30d'] != 0:
+                color = "green" if top_performer['30d'] > 0 else "red"
+                st.info(f"""
+                📈 **Top 30D Performer**  
+                **{top_performer['symbol']}**  
+                {top_performer['30d']:+.1f}%
+                """)
+            else:
+                st.info("📈 Performance data loading...")
         
         st.divider()
         
+        # --- SUMMARY METRICS ---
+        accum = sum(1 for w in data if w['phase'] == 'Accumulation')
+        distrib = sum(1 for w in data if w['phase'] == 'Distribution')
+        avg_score = sum(d['signal_score'] for d in data) / len(data) if data else 0
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("🟢 Accumulation", accum)
+        col2.metric("🔴 Distribution", distrib)
+        col3.metric("📊 Avg Signal", f"{avg_score:.0f}/100")
+        col4.metric("📋 Total Assets", len(data))
+        
+        st.divider()
+        
+        # --- SORTABLE DATA TABLE ---
+        st.markdown("### 📊 Performance Overview")
+        
+        # Build table data
+        table_data = []
         for item in data:
-            cols = st.columns([2, 1, 2, 2, 1])
-            cols[0].markdown(f"**{item['status']} {item['symbol']}**")
-            cols[1].write(f"${item['price']:,.0f}" if item['price'] > 0 else "N/A")
-            cols[2].write(item['phase'])
-            cols[3].write(f"{item['wyckoff_emoji']} {item['wyckoff']}")
-            color = "green" if item['change'] > 0 else "red"
-            cols[4].markdown(f"<span style='color:{color}'>{item['change']:+.1f}%</span>", unsafe_allow_html=True)
-            st.divider()
+            levels = item.get('levels', {})
+            support = levels.get('support', 0)
+            resistance = levels.get('resistance', 0)
+            
+            table_data.append({
+                'Asset': f"{item['status']} {item['symbol']}",
+                'Price': f"${item['price']:,.2f}" if item['price'] > 0 else "N/A",
+                '7D': item['7d'],
+                '30D': item['30d'],
+                '90D': item['90d'],
+                'YTD': item['ytd'],
+                'Phase': item['phase'],
+                'Score': item['signal_score'],
+                'Action': item['action'],
+                'Support': f"${support:,.0f}" if support > 0 else "-",
+                'Resistance': f"${resistance:,.0f}" if resistance > 0 else "-"
+            })
+        
+        df_table = pd.DataFrame(table_data)
+        
+        # Format percentage columns with colors
+        def color_returns(val):
+            if isinstance(val, (int, float)):
+                color = 'color: #26a69a' if val > 0 else 'color: #ef5350' if val < 0 else ''
+                return color
+            return ''
+        
+        def color_score(val):
+            if val >= 80:
+                return 'background-color: rgba(38, 166, 154, 0.3)'
+            elif val >= 60:
+                return 'background-color: rgba(255, 235, 59, 0.3)'
+            elif val >= 40:
+                return ''
+            elif val >= 20:
+                return 'background-color: rgba(255, 152, 0, 0.3)'
+            else:
+                return 'background-color: rgba(239, 83, 80, 0.3)'
+        
+        # Display with column config
+        st.dataframe(
+            df_table,
+            column_config={
+                'Asset': st.column_config.TextColumn('Asset', width='medium'),
+                'Price': st.column_config.TextColumn('Price', width='small'),
+                '7D': st.column_config.NumberColumn('7D %', format="%.1f%%"),
+                '30D': st.column_config.NumberColumn('30D %', format="%.1f%%"),
+                '90D': st.column_config.NumberColumn('90D %', format="%.1f%%"),
+                'YTD': st.column_config.NumberColumn('YTD %', format="%.1f%%"),
+                'Phase': st.column_config.TextColumn('Phase', width='small'),
+                'Score': st.column_config.ProgressColumn('Signal', min_value=0, max_value=100, format="%d"),
+                'Action': st.column_config.TextColumn('Action', width='medium'),
+                'Support': st.column_config.TextColumn('Support', width='small'),
+                'Resistance': st.column_config.TextColumn('Resistance', width='small'),
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        st.divider()
+        
+        # --- DETAILED CARDS ---
+        st.markdown("### 📋 Detailed Analysis")
+        
+        # Sort by signal score descending
+        sorted_data = sorted(data, key=lambda x: x['signal_score'], reverse=True)
+        
+        for item in sorted_data:
+            with st.expander(f"{item['status']} **{item['symbol']}** - Score: {item['signal_score']}/100 | {item['action']}", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("**📈 Performance**")
+                    metrics = f"""
+                    - 7D: {item['7d']:+.1f}%
+                    - 30D: {item['30d']:+.1f}%
+                    - 90D: {item['90d']:+.1f}%
+                    - YTD: {item['ytd']:+.1f}%
+                    """
+                    st.markdown(metrics)
+                
+                with col2:
+                    st.markdown("**🔍 Analysis**")
+                    st.markdown(f"""
+                    - Phase: {item['phase']}
+                    - Wyckoff: {item['wyckoff_emoji']} {item['wyckoff']}
+                    - {item.get('wyckoff_desc', '')}
+                    """)
+                
+                with col3:
+                    levels = item.get('levels', {})
+                    if levels:
+                        st.markdown("**🎯 Key Levels**")
+                        st.markdown(f"""
+                        - Support: ${levels.get('support', 0):,.2f}
+                        - Resistance: ${levels.get('resistance', 0):,.2f}
+                        - Entry Zone: ${levels.get('entry_low', 0):,.2f} - ${levels.get('entry_high', 0):,.2f}
+                        """)
+        
+        # --- LEGEND ---
+        with st.expander("📖 Signal Score Guide"):
+            st.markdown("""
+            | Score | Action | Meaning |
+            |-------|--------|---------|
+            | 80-100 | 🟢 STRONG BUY | Accumulation + Bullish signals aligned |
+            | 60-79 | 🟡 BUY | Favorable conditions |
+            | 40-59 | ⚪ HOLD | Neutral - wait for clarity |
+            | 20-39 | 🟠 CAUTION | Unfavorable signals |
+            | 0-19 | 🔴 AVOID | Distribution + Bearish signals |
+            
+            **Factors considered:** Phase, Wyckoff, A/D Momentum, Trend Position
+            """)
     else:
         st.info("👆 Click 'Refresh' to load data")
 
 # Timeframe Compare
 elif analysis_mode == "🔄 Timeframe Compare":
-    st.subheader(f"🔄 {symbol} - Daily vs Weekly")
+    st.subheader(f"🔄 {symbol} - Multi-Timeframe Analysis")
     
     if 'compare_btn' in dir() and compare_btn:
-        with st.spinner("Loading..."):
+        with st.spinner("Analyzing daily and weekly timeframes..."):
             df_d = fetch_data(symbol, '1d')
             df_w = fetch_data(symbol, '1wk')
         
         if not df_d.empty and not df_w.empty:
+            # Calculate alignment score
+            alignment = calculate_mtf_alignment(df_d.copy(), df_w.copy())
+            
+            # Re-analyze for display (since mtf_alignment modifies dfs)
             phase_d, _, df_d = analyze_ad_phase_fast(df_d, 26)
             phase_w, _, df_w = analyze_ad_phase_fast(df_w, 52)
             wyck_d = detect_wyckoff_fast(df_d, 26)
             wyck_w = detect_wyckoff_fast(df_w, 52)
             
-            daily_bull = phase_d in ['accumulation', 'uptrend']
-            weekly_bull = phase_w in ['accumulation', 'uptrend']
+            # Trend strength
+            trend_d = calculate_trend_strength_adx(df_d)
+            trend_w = calculate_trend_strength_adx(df_w)
             
-            if daily_bull and weekly_bull:
-                st.success("✅ **STRONG BUY ZONE** - Both timeframes bullish")
-            elif not daily_bull and not weekly_bull:
-                st.error("🔴 **STRONG SELL ZONE** - Both bearish")
+            # Key levels (from weekly)
+            levels = find_support_resistance(df_w, 52)
+            current_price = df_w['close'].iloc[-1]
+            
+            # --- ALIGNMENT SCORE BANNER ---
+            score = alignment['score']
+            rec = alignment['recommendation']
+            conf = alignment['confidence']
+            
+            if score >= 75:
+                st.success(f"""
+                ### 🎯 ALIGNMENT SCORE: {score}/100 - {rec}
+                **Confidence: {conf}** | Both timeframes aligned bullish - favorable for entries
+                """)
+            elif score >= 60:
+                st.info(f"""
+                ### 🎯 ALIGNMENT SCORE: {score}/100 - {rec}
+                **Confidence: {conf}** | Conditions improving - monitor for entry
+                """)
+            elif score >= 40:
+                st.warning(f"""
+                ### 🎯 ALIGNMENT SCORE: {score}/100 - {rec}
+                **Confidence: {conf}** | Mixed signals - wait for clarity
+                """)
             else:
-                st.warning("⚠️ **CAUTION** - Timeframes not aligned")
+                st.error(f"""
+                ### 🎯 ALIGNMENT SCORE: {score}/100 - {rec}
+                **Confidence: {conf}** | Unfavorable conditions - avoid or reduce exposure
+                """)
             
+            st.divider()
+            
+            # --- TIMEFRAME COMPARISON CARDS ---
             col1, col2 = st.columns(2)
+            
             with col1:
-                st.markdown("### 📅 Daily")
-                st.metric("Phase", phase_d.title())
+                st.markdown("### 📅 Daily Timeframe")
+                
+                # Phase & Wyckoff
+                phase_color = "🟢" if phase_d in ['accumulation', 'uptrend'] else "🔴" if phase_d in ['distribution', 'downtrend'] else "⚪"
+                st.metric("Phase", f"{phase_color} {phase_d.title()}")
+                
+                # Trend strength
+                trend_dir_emoji = "📈" if trend_d['direction'] == 'bullish' else "📉" if trend_d['direction'] == 'bearish' else "↔️"
+                st.metric("Trend", f"{trend_d['strength']}", delta=f"ADX: {trend_d['adx']:.1f}")
+                
+                # A/D status
+                if 'ad' in df_d.columns and len(df_d) >= 20:
+                    ad_recent = df_d['ad'].iloc[-1] - df_d['ad'].iloc[-20]
+                    ad_status = "📈 Money Flowing IN" if ad_recent > 0 else "📉 Money Flowing OUT"
+                    st.caption(ad_status)
+                
                 st.caption(wyck_d['description'])
+            
             with col2:
-                st.markdown("### 📆 Weekly")
-                st.metric("Phase", phase_w.title())
+                st.markdown("### 📆 Weekly Timeframe")
+                
+                # Phase & Wyckoff
+                phase_color = "🟢" if phase_w in ['accumulation', 'uptrend'] else "🔴" if phase_w in ['distribution', 'downtrend'] else "⚪"
+                st.metric("Phase", f"{phase_color} {phase_w.title()}")
+                
+                # Trend strength
+                trend_dir_emoji = "📈" if trend_w['direction'] == 'bullish' else "📉" if trend_w['direction'] == 'bearish' else "↔️"
+                st.metric("Trend", f"{trend_w['strength']}", delta=f"ADX: {trend_w['adx']:.1f}")
+                
+                # A/D status
+                if 'ad' in df_w.columns and len(df_w) >= 10:
+                    ad_recent = df_w['ad'].iloc[-1] - df_w['ad'].iloc[-10]
+                    ad_status = "📈 Money Flowing IN" if ad_recent > 0 else "📉 Money Flowing OUT"
+                    st.caption(ad_status)
+                
                 st.caption(wyck_w['description'])
+            
+            st.divider()
+            
+            # --- KEY LEVELS & ENTRY ZONE ---
+            st.markdown("### 🎯 Key Levels & Entry Zone")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Current Price", f"${current_price:,.2f}")
+            
+            with col2:
+                support = levels.get('support', 0)
+                distance_to_support = ((current_price - support) / current_price) * 100 if support > 0 else 0
+                st.metric("Strong Support", f"${support:,.2f}", delta=f"{distance_to_support:+.1f}% away")
+            
+            with col3:
+                resistance = levels.get('resistance', 0)
+                distance_to_resistance = ((resistance - current_price) / current_price) * 100 if resistance > 0 else 0
+                st.metric("Resistance", f"${resistance:,.2f}", delta=f"{distance_to_resistance:+.1f}% away")
+            
+            with col4:
+                pivot = levels.get('pivot', 0)
+                st.metric("Pivot", f"${pivot:,.2f}")
+            
+            # Entry zone recommendation
+            entry_low = levels.get('entry_low', 0)
+            entry_high = levels.get('entry_high', 0)
+            
+            if score >= 60 and entry_low > 0:
+                st.success(f"""
+                **🎯 Optimal Entry Zone:** ${entry_low:,.2f} - ${entry_high:,.2f}
+                
+                *Strategy: Consider DCA (Dollar Cost Averaging) if price enters this zone*
+                """)
+            elif score >= 40:
+                st.info(f"""
+                **⏳ Wait Zone:** Market conditions mixed
+                
+                *Strategy: Wait for clearer signals before entering*
+                """)
+            else:
+                st.warning(f"""
+                **⚠️ Caution Zone:** Unfavorable conditions
+                
+                *Strategy: Avoid new entries, consider reducing exposure if in profit*
+                """)
+            
+            st.divider()
+            
+            # --- CHARTS ---
+            st.markdown("### 📊 Price Charts")
             
             fig = make_subplots(rows=2, cols=1, subplot_titles=("Daily", "Weekly"), vertical_spacing=0.12)
             
+            # Daily chart with key levels
             fig.add_trace(go.Candlestick(
                 x=df_d['timestamp'], open=df_d['open'], high=df_d['high'],
                 low=df_d['low'], close=df_d['close'], name='Daily',
                 increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=1, col=1)
             
+            # Weekly chart with support/resistance
             fig.add_trace(go.Candlestick(
                 x=df_w['timestamp'], open=df_w['open'], high=df_w['high'],
                 low=df_w['low'], close=df_w['close'], name='Weekly',
                 increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=2, col=1)
             
-            fig.update_layout(height=600, template='plotly_dark', showlegend=False)
+            # Add support/resistance lines to weekly chart
+            if levels.get('support', 0) > 0:
+                fig.add_hline(y=levels['support'], line_dash="dash", line_color="green", 
+                            annotation_text="Support", row=2, col=1)
+            if levels.get('resistance', 0) > 0:
+                fig.add_hline(y=levels['resistance'], line_dash="dash", line_color="red",
+                            annotation_text="Resistance", row=2, col=1)
+            
+            fig.update_layout(height=700, template='plotly_dark', showlegend=False)
             fig.update_xaxes(rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+            
+            # --- ALIGNMENT FACTORS BREAKDOWN ---
+            with st.expander("📖 Alignment Score Breakdown"):
+                factors = alignment.get('factors', {})
+                
+                st.markdown("""
+                | Factor | Score | Description |
+                |--------|-------|-------------|
+                | Phase Alignment | {} | Both timeframes in same market phase |
+                | Trend Alignment | {} | Price direction consistency |
+                | A/D Alignment | {} | Money flow consistency |
+                """.format(
+                    f"+{factors.get('phase_alignment', 0)}" if factors.get('phase_alignment', 0) > 0 else factors.get('phase_alignment', 0),
+                    f"+{factors.get('trend_alignment', 0)}" if factors.get('trend_alignment', 0) > 0 else factors.get('trend_alignment', 0),
+                    f"+{factors.get('ad_alignment', 0)}" if factors.get('ad_alignment', 0) > 0 else factors.get('ad_alignment', 0)
+                ))
+                
+                st.markdown("""
+                **Interpretation:**
+                - **75-100:** Strong alignment - high confidence entries
+                - **60-74:** Good alignment - favorable conditions
+                - **40-59:** Mixed signals - wait for clarity
+                - **25-39:** Poor alignment - caution advised
+                - **0-24:** Strong bearish alignment - avoid entries
+                """)
         else:
             st.error(f"Could not load {symbol}")
     else:
