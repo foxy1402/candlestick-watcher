@@ -348,7 +348,7 @@ with st.sidebar:
 # Single Asset
 if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_btn:
     with st.spinner(f"Analyzing {symbol}..."):
-        df = fetch_data(symbol, interval, limit_bars=400)
+        df = fetch_data(symbol, interval)
     
     if not df.empty:
         df = detect_patterns_optimized(df)
@@ -506,8 +506,8 @@ elif analysis_mode == "🔄 Timeframe Compare":
     
     if 'compare_btn' in dir() and compare_btn:
         with st.spinner("Loading..."):
-            df_d = fetch_data(symbol, '1d', 200)
-            df_w = fetch_data(symbol, '1wk', 100)
+            df_d = fetch_data(symbol, '1d')
+            df_w = fetch_data(symbol, '1wk')
         
         if not df_d.empty and not df_w.empty:
             phase_d, _, df_d = analyze_ad_phase_fast(df_d, 26)
