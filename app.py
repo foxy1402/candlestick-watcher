@@ -85,15 +85,12 @@ def fetch_open_interest_history(symbol: str, period: str = '1d', limit: int = 50
         binance_symbol = convert_symbol_to_binance(symbol)
         session = get_proxy_session(proxy_url)
         
-        # Map period to Binance-supported values
-        # Binance supports: 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
-        # For weekly view, we use 1d with max limit (500 bars = ~16 months)
-        api_period = '1d' if period == '1w' else period
-        
+        # Binance OI History API only returns last 30 days of data
+        # Supported periods: 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
         url = f"https://fapi.binance.com/futures/data/openInterestHist"
         params = {
             'symbol': binance_symbol,
-            'period': api_period,
+            'period': period,
             'limit': limit
         }
         
@@ -967,12 +964,16 @@ with st.sidebar:
     elif analysis_mode == "📈 Open Interest Monitor":
         symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
         
+        # Binance OI History API only provides last 30 days max
         oi_period = st.selectbox(
-            "OI Period",
-            ["1d", "1w"],
-            format_func=lambda x: {"1d": "Daily (~30 days)", "1w": "Weekly (~6 months)"}[x],
-            index=0
+            "OI Resolution",
+            ["1h", "4h", "1d"],
+            format_func=lambda x: {"1h": "Hourly (500 hrs = ~20 days)", "4h": "4-Hourly (500 bars = ~80 days*)", "1d": "Daily (30 days max)"}[x],
+            index=2,
+            help="⚠️ Binance API only stores last 30 days of OI data"
         )
+        
+        st.caption("⚠️ Note: Binance OI History API limited to ~30 days")
         
         # Max limit for Binance OI History API is 500
         oi_limit = 500
