@@ -111,62 +111,197 @@ def fetch_open_interest_history(symbol: str, period: str = '1h', limit: int = 48
     except Exception as e:
         return pd.DataFrame()
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_funding_rate(symbol: str, proxy_url: str = '') -> dict:
+    """Fetch current funding rate from Binance Futures API - key investment indicator."""
+    try:
+        binance_symbol = convert_symbol_to_binance(symbol)
+        session = get_proxy_session(proxy_url)
+        
+        # Funding Rate endpoint
+        url = f"https://fapi.binance.com/fapi/v1/fundingRate"
+        params = {'symbol': binance_symbol, 'limit': 1}
+        response = session.get(url, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            return {'error': f'API {response.status_code}', 'rate': 0}
+        
+        data = response.json()
+        if data and len(data) > 0:
+            rate = float(data[0].get('fundingRate', 0)) * 100  # Convert to percentage
+            return {
+                'rate': rate,
+                'timestamp': data[0].get('fundingTime'),
+                'error': None
+            }
+        return {'rate': 0, 'error': 'No data'}
+    except Exception as e:
+        return {'rate': 0, 'error': str(e)}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_long_short_ratio(symbol: str, proxy_url: str = '') -> dict:
+    """Fetch long/short ratio - shows market sentiment."""
+    try:
+        binance_symbol = convert_symbol_to_binance(symbol)
+        session = get_proxy_session(proxy_url)
+        
+        url = f"https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
+        params = {'symbol': binance_symbol, 'period': '1h', 'limit': 1}
+        response = session.get(url, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            return {'error': f'API {response.status_code}', 'ratio': 1.0, 'long_pct': 50, 'short_pct': 50}
+        
+        data = response.json()
+        if data and len(data) > 0:
+            ratio = float(data[0].get('longShortRatio', 1.0))
+            long_account = float(data[0].get('longAccount', 0.5)) * 100
+            short_account = float(data[0].get('shortAccount', 0.5)) * 100
+            return {
+                'ratio': ratio,
+                'long_pct': long_account,
+                'short_pct': short_account,
+                'error': None
+            }
+        return {'ratio': 1.0, 'long_pct': 50, 'short_pct': 50, 'error': 'No data'}
+    except Exception as e:
+        return {'ratio': 1.0, 'long_pct': 50, 'short_pct': 50, 'error': str(e)}
+
 def analyze_oi_advisory(oi_change_pct: float, price_change_pct: float) -> dict:
     """
     Generate investment advisory based on OI + Price divergence.
-    
-    | OI Change | Price Change | Signal |
-    |-----------|-------------|--------|
-    | ↑ Rising  | ↑ Rising    | 🟢 Bullish - New money, trend strong |
-    | ↑ Rising  | ↓ Falling   | 🔴 Bearish - Shorts entering |
-    | ↓ Falling | ↑ Rising    | 🟡 Weak Rally - Short covering |
-    | ↓ Falling | ↓ Falling   | 🟠 Capitulation - Potential bottom |
+    Thresholds lowered to 0.5% for better sensitivity in typical market conditions.
     """
-    if oi_change_pct > 2 and price_change_pct > 1:
+    # Lowered thresholds for more responsive signals
+    if oi_change_pct > 0.5 and price_change_pct > 0.5:
         return {
             'signal': 'BULLISH',
             'emoji': '🟢',
             'label': 'STRONG TREND',
-            'description': 'New money entering + Price rising = Healthy uptrend. Trend likely to continue.',
-            'advisory': 'Favorable for holding or adding positions',
-            'color': 'green'
+            'description': 'New money entering + Price rising = Healthy uptrend.',
+            'advisory': '✅ Favorable for holding or adding positions',
+            'color': 'green',
+            'score': 80
         }
-    elif oi_change_pct > 2 and price_change_pct < -1:
+    elif oi_change_pct > 0.5 and price_change_pct < -0.5:
         return {
             'signal': 'BEARISH',
             'emoji': '🔴',
             'label': 'SHORT PRESSURE',
-            'description': 'OI rising while price falls = Short sellers entering aggressively.',
-            'advisory': 'Caution advised - Potential further downside',
-            'color': 'red'
+            'description': 'OI rising while price falls = Short sellers entering.',
+            'advisory': '⚠️ Caution - Potential further downside',
+            'color': 'red',
+            'score': 25
         }
-    elif oi_change_pct < -2 and price_change_pct > 1:
+    elif oi_change_pct < -0.5 and price_change_pct > 0.5:
         return {
             'signal': 'WEAK_RALLY',
             'emoji': '🟡',
             'label': 'WEAK RALLY',
-            'description': 'OI falling while price rises = Short covering, not sustainable.',
-            'advisory': 'Rally may be temporary - Wait for confirmation',
-            'color': 'yellow'
+            'description': 'OI falling while price rises = Short covering rally.',
+            'advisory': '⏳ Rally may be temporary - Wait for confirmation',
+            'color': 'yellow',
+            'score': 50
         }
-    elif oi_change_pct < -2 and price_change_pct < -1:
+    elif oi_change_pct < -0.5 and price_change_pct < -0.5:
         return {
             'signal': 'CAPITULATION',
             'emoji': '🟠',
             'label': 'CAPITULATION',
-            'description': 'OI + Price both falling = Liquidations, positions closing.',
-            'advisory': 'Potential bottom forming - Watch for reversal',
-            'color': 'orange'
+            'description': 'OI + Price both falling = Liquidations happening.',
+            'advisory': '👀 Potential bottom - Watch for reversal',
+            'color': 'orange',
+            'score': 40
         }
     else:
         return {
             'signal': 'NEUTRAL',
             'emoji': '⚪',
             'label': 'CONSOLIDATION',
-            'description': 'No strong divergence detected. Market consolidating.',
-            'advisory': 'Wait for clearer signals',
-            'color': 'gray'
+            'description': 'No strong divergence. Market ranging.',
+            'advisory': '⏸️ Wait for clearer signals',
+            'color': 'gray',
+            'score': 50
         }
+
+def calculate_derivatives_score(oi_change: float, funding_rate: float, long_short_ratio: float, price_change: float) -> dict:
+    """
+    Calculate comprehensive derivatives-based investment score (0-100).
+    Combines OI, funding rate, and positioning data for actionable advice.
+    """
+    score = 50  # Start neutral
+    factors = []
+    
+    # OI Trend (+/- 20 points)
+    if oi_change > 1:
+        score += 15
+        factors.append(('OI Rising', '+15', 'green'))
+    elif oi_change > 0:
+        score += 5
+        factors.append(('OI Slightly Up', '+5', 'green'))
+    elif oi_change < -1:
+        score -= 15
+        factors.append(('OI Falling', '-15', 'red'))
+    elif oi_change < 0:
+        score -= 5
+        factors.append(('OI Slightly Down', '-5', 'red'))
+    
+    # Funding Rate (+/- 15 points) - Negative funding = bullish for longs
+    if funding_rate < -0.01:  # Very negative = shorts paying longs
+        score += 15
+        factors.append(('Funding Negative (Bullish)', '+15', 'green'))
+    elif funding_rate < 0:
+        score += 5
+        factors.append(('Funding Slightly Negative', '+5', 'green'))
+    elif funding_rate > 0.05:  # High positive = overheated longs
+        score -= 15
+        factors.append(('Funding High (Overheated)', '-15', 'red'))
+    elif funding_rate > 0.01:
+        score -= 5
+        factors.append(('Funding Elevated', '-5', 'orange'))
+    
+    # Long/Short Ratio (+/- 15 points) - Contrarian indicator
+    if long_short_ratio < 0.8:  # More shorts = potential squeeze
+        score += 15
+        factors.append(('Shorts Crowded (Squeeze Risk)', '+15', 'green'))
+    elif long_short_ratio < 1.0:
+        score += 5
+        factors.append(('Slight Short Bias', '+5', 'green'))
+    elif long_short_ratio > 1.5:  # Too many longs = risk
+        score -= 15
+        factors.append(('Longs Crowded (Risk)', '-15', 'red'))
+    elif long_short_ratio > 1.2:
+        score -= 5
+        factors.append(('Long Bias', '-5', 'orange'))
+    
+    # Price trend alignment (+/- 10 points)
+    if oi_change > 0 and price_change > 0:
+        score += 10
+        factors.append(('Trend Confirmed', '+10', 'green'))
+    elif oi_change > 0 and price_change < 0:
+        score -= 10
+        factors.append(('Bearish Divergence', '-10', 'red'))
+    
+    # Clamp score
+    score = max(0, min(100, score))
+    
+    # Generate recommendation
+    if score >= 70:
+        recommendation = '🟢 FAVORABLE - Good conditions for long positions'
+    elif score >= 55:
+        recommendation = '🟡 NEUTRAL-BULLISH - Cautiously optimistic'
+    elif score >= 45:
+        recommendation = '⚪ NEUTRAL - Wait for clearer signals'
+    elif score >= 30:
+        recommendation = '🟠 CAUTION - Unfavorable conditions'
+    else:
+        recommendation = '🔴 AVOID - High-risk environment'
+    
+    return {
+        'score': score,
+        'factors': factors,
+        'recommendation': recommendation
+    }
 
 # --- Helper Functions for Data Safety ---
 def safe_pct_change(current: float, previous: float) -> float:
@@ -1378,120 +1513,146 @@ elif analysis_mode == "🔄 Timeframe Compare":
 
 # Open Interest Monitor
 elif analysis_mode == "📈 Open Interest Monitor":
-    st.subheader(f"📈 {symbol} - Open Interest Monitor")
-    st.caption("Futures Open Interest Analysis | Investment Advisory")
+    st.subheader(f"📈 {symbol} - Derivatives Analysis")
+    st.caption("Open Interest | Funding Rate | Long/Short Ratio | Investment Score")
     
     if 'oi_analyze_btn' in dir() and oi_analyze_btn:
         proxy = st.session_state.socks5_proxy
         
-        with st.spinner(f"Fetching OI data for {symbol}..."):
-            # Fetch current OI
+        with st.spinner(f"Fetching derivatives data for {symbol}..."):
+            # Fetch all derivatives data
             oi_current = fetch_open_interest(symbol, proxy)
-            
-            # Fetch historical OI
             oi_history = fetch_open_interest_history(symbol, oi_period, oi_limit, proxy)
-            
-            # Fetch price data for comparison
+            funding = fetch_funding_rate(symbol, proxy)
+            ls_ratio = fetch_long_short_ratio(symbol, proxy)
             df_price = fetch_data(symbol, '1d')
         
-        if oi_current.get('error'):
-            st.error(f"⚠️ Error fetching OI: {oi_current['error']}")
+        # Check for critical errors
+        has_error = oi_current.get('error') and 'timeout' not in str(oi_current.get('error', '')).lower()
+        
+        if has_error:
+            st.error(f"⚠️ API Error: {oi_current['error']}")
             st.info("""
             **Troubleshooting:**
-            - Ensure your SOCKS5 proxy is configured in the sidebar
-            - Verify the symbol has futures on Binance (e.g., BTC-USD → BTCUSDT)
-            - Check proxy connectivity
+            - Verify `SOCKS5_PROXY_URL` is set in Streamlit Secrets
+            - Check proxy connectivity (format: `socks5://user:pass@host:port`)
+            - Symbol must have Binance Futures (e.g., BTC-USD → BTCUSDT)
             """)
         else:
-            # --- CURRENT OI METRICS ---
-            current_oi = oi_current['oi']
+            # --- CALCULATE ALL METRICS ---
+            current_oi = oi_current.get('oi', 0)
             binance_sym = oi_current.get('binance_symbol', symbol)
             
-            # Calculate OI change from history
+            # OI change
             oi_change_pct = 0
             if not oi_history.empty and len(oi_history) >= 2:
                 first_oi = oi_history['sumOpenInterest'].iloc[0]
                 last_oi = oi_history['sumOpenInterest'].iloc[-1]
                 oi_change_pct = safe_pct_change(last_oi, first_oi)
             
-            # Get price change for same period
+            # Price change
             price_change_pct = 0
+            current_price = 0
             if not df_price.empty and len(df_price) >= 2:
                 lookback = min(len(df_price), oi_limit)
                 first_price = df_price['close'].iloc[-lookback]
-                last_price = df_price['close'].iloc[-1]
-                price_change_pct = safe_pct_change(last_price, first_price)
+                current_price = df_price['close'].iloc[-1]
+                price_change_pct = safe_pct_change(current_price, first_price)
             
-            # Get advisory signal
-            advisory = analyze_oi_advisory(oi_change_pct, price_change_pct)
+            # Funding rate
+            funding_rate = funding.get('rate', 0)
             
-            # --- ADVISORY BANNER ---
-            if advisory['color'] == 'green':
+            # Long/Short ratio
+            long_pct = ls_ratio.get('long_pct', 50)
+            short_pct = ls_ratio.get('short_pct', 50)
+            ratio_value = ls_ratio.get('ratio', 1.0)
+            
+            # Calculate comprehensive score
+            deriv_score = calculate_derivatives_score(oi_change_pct, funding_rate, ratio_value, price_change_pct)
+            
+            # --- INVESTMENT SCORE BANNER ---
+            score = deriv_score['score']
+            recommendation = deriv_score['recommendation']
+            
+            if score >= 70:
                 st.success(f"""
-                ### {advisory['emoji']} {advisory['label']}
-                **{advisory['description']}**
-                
-                📋 **Advisory:** {advisory['advisory']}
+                ### 🎯 Investment Score: {score}/100
+                **{recommendation}**
                 """)
-            elif advisory['color'] == 'red':
-                st.error(f"""
-                ### {advisory['emoji']} {advisory['label']}
-                **{advisory['description']}**
-                
-                📋 **Advisory:** {advisory['advisory']}
+            elif score >= 55:
+                st.info(f"""
+                ### 🎯 Investment Score: {score}/100
+                **{recommendation}**
                 """)
-            elif advisory['color'] == 'orange':
+            elif score >= 45:
                 st.warning(f"""
-                ### {advisory['emoji']} {advisory['label']}
-                **{advisory['description']}**
-                
-                📋 **Advisory:** {advisory['advisory']}
-                """)
-            elif advisory['color'] == 'yellow':
-                st.warning(f"""
-                ### {advisory['emoji']} {advisory['label']}
-                **{advisory['description']}**
-                
-                📋 **Advisory:** {advisory['advisory']}
+                ### 🎯 Investment Score: {score}/100
+                **{recommendation}**
                 """)
             else:
-                st.info(f"""
-                ### {advisory['emoji']} {advisory['label']}
-                **{advisory['description']}**
-                
-                📋 **Advisory:** {advisory['advisory']}
+                st.error(f"""
+                ### 🎯 Investment Score: {score}/100
+                **{recommendation}**
                 """)
             
             st.divider()
             
-            # --- KEY METRICS ---
-            st.markdown("### 📊 Key Metrics")
+            # --- KEY DERIVATIVES METRICS ---
+            st.markdown("### 📊 Derivatives Metrics")
             
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                # Format OI with appropriate suffix
+                # Format OI
                 if current_oi >= 1_000_000:
                     oi_display = f"{current_oi/1_000_000:.2f}M"
                 elif current_oi >= 1_000:
                     oi_display = f"{current_oi/1_000:.2f}K"
                 else:
                     oi_display = f"{current_oi:.2f}"
-                st.metric("Current OI", oi_display, delta=f"{oi_change_pct:+.1f}%")
+                st.metric("Open Interest", oi_display, delta=f"{oi_change_pct:+.2f}%")
             
             with col2:
-                oi_trend = "📈 Rising" if oi_change_pct > 0 else "📉 Falling" if oi_change_pct < 0 else "➡️ Flat"
-                st.metric("OI Trend", oi_trend)
+                # Funding rate interpretation
+                if funding_rate < -0.01:
+                    funding_label = f"{funding_rate:.4f}% 🟢"
+                elif funding_rate > 0.03:
+                    funding_label = f"{funding_rate:.4f}% 🔴"
+                else:
+                    funding_label = f"{funding_rate:.4f}%"
+                st.metric("Funding Rate", funding_label)
             
             with col3:
-                if not df_price.empty:
-                    current_price = df_price['close'].iloc[-1]
-                    st.metric("Price", f"${current_price:,.2f}", delta=f"{price_change_pct:+.1f}%")
+                # Long/Short interpretation
+                if ratio_value > 1.2:
+                    ls_label = f"{ratio_value:.2f} (🐂 Longs)"
+                elif ratio_value < 0.8:
+                    ls_label = f"{ratio_value:.2f} (🐻 Shorts)"
                 else:
-                    st.metric("Price", "N/A")
+                    ls_label = f"{ratio_value:.2f} (Balanced)"
+                st.metric("Long/Short Ratio", ls_label)
             
             with col4:
-                st.metric("Symbol", binance_sym)
+                st.metric("Price", f"${current_price:,.2f}" if current_price > 0 else "N/A", delta=f"{price_change_pct:+.1f}%")
+            
+            st.divider()
+            
+            # --- SCORE FACTORS BREAKDOWN ---
+            st.markdown("### 🔍 Score Breakdown")
+            
+            factors = deriv_score['factors']
+            if factors:
+                cols = st.columns(len(factors))
+                for i, (name, points, color) in enumerate(factors):
+                    with cols[i]:
+                        if color == 'green':
+                            st.success(f"**{name}**\n\n{points}")
+                        elif color == 'red':
+                            st.error(f"**{name}**\n\n{points}")
+                        else:
+                            st.warning(f"**{name}**\n\n{points}")
+            else:
+                st.info("No significant factors detected")
             
             st.divider()
             
