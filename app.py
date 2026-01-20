@@ -6,6 +6,9 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+from datetime import datetime, timedelta
+import os
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="Crypto Pattern Watcher", page_icon="🕯️")
@@ -13,6 +16,157 @@ st.set_page_config(layout="wide", page_title="Crypto Pattern Watcher", page_icon
 # --- Session State Initialization ---
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = ['BTC-USD', 'ETH-USD', 'SOL-USD']
+if 'socks5_proxy' not in st.session_state:
+    st.session_state.socks5_proxy = ''
+
+# --- Open Interest Helper Functions ---
+def convert_symbol_to_binance(symbol: str) -> str:
+    """Convert Yahoo Finance symbol to Binance Futures format."""
+    # BTC-USD -> BTCUSDT, ETH-USD -> ETHUSDT
+    symbol = symbol.upper().replace('-USD', 'USDT').replace('USDT', 'USDT')
+    if not symbol.endswith('USDT'):
+        symbol = symbol + 'USDT'
+    return symbol
+
+def get_proxy_session(proxy_url: str = None) -> requests.Session:
+    """
+    Create a requests session with SOCKS5 proxy for Binance API.
+    Reads proxy URL from environment variable for security.
+    
+    Environment variable: SOCKS5_PROXY_URL
+    Format: socks5://user:password@host:port
+    """
+    session = requests.Session()
+    
+    # Priority: 1) Function arg, 2) Environment variable, 3) Session state
+    if not proxy_url:
+        proxy_url = os.environ.get('SOCKS5_PROXY_URL', '')
+    if not proxy_url and 'socks5_proxy' in st.session_state:
+        proxy_url = st.session_state.socks5_proxy
+    
+    if proxy_url and proxy_url.strip():
+        session.proxies = {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+    return session
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_open_interest(symbol: str, proxy_url: str = '') -> dict:
+    """Fetch current Open Interest from Binance Futures API."""
+    try:
+        binance_symbol = convert_symbol_to_binance(symbol)
+        session = get_proxy_session(proxy_url)
+        
+        # Current OI
+        url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={binance_symbol}"
+        response = session.get(url, timeout=10)
+        
+        if response.status_code != 200:
+            return {'error': f'API error: {response.status_code}', 'oi': 0, 'symbol': symbol}
+        
+        data = response.json()
+        current_oi = float(data.get('openInterest', 0))
+        
+        return {
+            'symbol': symbol,
+            'binance_symbol': binance_symbol,
+            'oi': current_oi,
+            'timestamp': datetime.now().isoformat(),
+            'error': None
+        }
+    except Exception as e:
+        return {'error': str(e), 'oi': 0, 'symbol': symbol}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_open_interest_history(symbol: str, period: str = '1h', limit: int = 48, proxy_url: str = '') -> pd.DataFrame:
+    """Fetch historical Open Interest data from Binance Futures API."""
+    try:
+        binance_symbol = convert_symbol_to_binance(symbol)
+        session = get_proxy_session(proxy_url)
+        
+        # Historical OI (up to 30 days)
+        url = f"https://fapi.binance.com/futures/data/openInterestHist"
+        params = {
+            'symbol': binance_symbol,
+            'period': period,  # 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+            'limit': limit
+        }
+        
+        response = session.get(url, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            return pd.DataFrame()
+        
+        data = response.json()
+        if not data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['sumOpenInterest'] = df['sumOpenInterest'].astype(float)
+        df['sumOpenInterestValue'] = df['sumOpenInterestValue'].astype(float)
+        
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+def analyze_oi_advisory(oi_change_pct: float, price_change_pct: float) -> dict:
+    """
+    Generate investment advisory based on OI + Price divergence.
+    
+    | OI Change | Price Change | Signal |
+    |-----------|-------------|--------|
+    | ↑ Rising  | ↑ Rising    | 🟢 Bullish - New money, trend strong |
+    | ↑ Rising  | ↓ Falling   | 🔴 Bearish - Shorts entering |
+    | ↓ Falling | ↑ Rising    | 🟡 Weak Rally - Short covering |
+    | ↓ Falling | ↓ Falling   | 🟠 Capitulation - Potential bottom |
+    """
+    if oi_change_pct > 2 and price_change_pct > 1:
+        return {
+            'signal': 'BULLISH',
+            'emoji': '🟢',
+            'label': 'STRONG TREND',
+            'description': 'New money entering + Price rising = Healthy uptrend. Trend likely to continue.',
+            'advisory': 'Favorable for holding or adding positions',
+            'color': 'green'
+        }
+    elif oi_change_pct > 2 and price_change_pct < -1:
+        return {
+            'signal': 'BEARISH',
+            'emoji': '🔴',
+            'label': 'SHORT PRESSURE',
+            'description': 'OI rising while price falls = Short sellers entering aggressively.',
+            'advisory': 'Caution advised - Potential further downside',
+            'color': 'red'
+        }
+    elif oi_change_pct < -2 and price_change_pct > 1:
+        return {
+            'signal': 'WEAK_RALLY',
+            'emoji': '🟡',
+            'label': 'WEAK RALLY',
+            'description': 'OI falling while price rises = Short covering, not sustainable.',
+            'advisory': 'Rally may be temporary - Wait for confirmation',
+            'color': 'yellow'
+        }
+    elif oi_change_pct < -2 and price_change_pct < -1:
+        return {
+            'signal': 'CAPITULATION',
+            'emoji': '🟠',
+            'label': 'CAPITULATION',
+            'description': 'OI + Price both falling = Liquidations, positions closing.',
+            'advisory': 'Potential bottom forming - Watch for reversal',
+            'color': 'orange'
+        }
+    else:
+        return {
+            'signal': 'NEUTRAL',
+            'emoji': '⚪',
+            'label': 'CONSOLIDATION',
+            'description': 'No strong divergence detected. Market consolidating.',
+            'advisory': 'Wait for clearer signals',
+            'color': 'gray'
+        }
 
 # --- Helper Functions for Data Safety ---
 def safe_pct_change(current: float, previous: float) -> float:
@@ -627,7 +781,7 @@ with st.sidebar:
     
     analysis_mode = st.radio(
         "Analysis Mode",
-        ["📊 Single Asset", "📋 Watchlist Dashboard", "🔄 Timeframe Compare"],
+        ["📊 Single Asset", "📋 Watchlist Dashboard", "🔄 Timeframe Compare", "📈 Open Interest Monitor"],
         index=0
     )
     
@@ -667,9 +821,36 @@ with st.sidebar:
         
         refresh_btn = st.button("🔄 Refresh", use_container_width=True, type="primary")
     
-    else:
+    elif analysis_mode == "🔄 Timeframe Compare":
         symbol = st.text_input("Symbol", value="BTC-USD").upper()
         compare_btn = st.button("🔄 Compare", use_container_width=True, type="primary")
+    
+    elif analysis_mode == "📈 Open Interest Monitor":
+        symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
+        
+        oi_period = st.selectbox(
+            "OI Period",
+            ["1h", "4h", "1d"],
+            format_func=lambda x: {"1h": "Hourly", "4h": "4-Hour", "1d": "Daily"}[x],
+            index=0
+        )
+        
+        oi_limit = st.slider("History Bars", min_value=24, max_value=200, value=48)
+        
+        st.divider()
+        st.subheader("🔧 Proxy Status")
+        
+        # Check if SOCKS5 proxy is configured via environment variable
+        proxy_configured = bool(os.environ.get('SOCKS5_PROXY_URL', ''))
+        
+        if proxy_configured:
+            st.success("✅ SOCKS5 proxy configured via environment")
+        else:
+            st.warning("⚠️ SOCKS5 proxy not configured")
+            st.caption("Set `SOCKS5_PROXY_URL` in Streamlit Secrets")
+            st.caption("Format: `socks5://user:pass@host:port`")
+        
+        oi_analyze_btn = st.button("📈 Analyze OI", use_container_width=True, type="primary")
 
 # --- Main Content ---
 
@@ -1195,6 +1376,229 @@ elif analysis_mode == "🔄 Timeframe Compare":
     else:
         st.info("👆 Click 'Compare' to analyze")
 
+# Open Interest Monitor
+elif analysis_mode == "📈 Open Interest Monitor":
+    st.subheader(f"📈 {symbol} - Open Interest Monitor")
+    st.caption("Futures Open Interest Analysis | Investment Advisory")
+    
+    if 'oi_analyze_btn' in dir() and oi_analyze_btn:
+        proxy = st.session_state.socks5_proxy
+        
+        with st.spinner(f"Fetching OI data for {symbol}..."):
+            # Fetch current OI
+            oi_current = fetch_open_interest(symbol, proxy)
+            
+            # Fetch historical OI
+            oi_history = fetch_open_interest_history(symbol, oi_period, oi_limit, proxy)
+            
+            # Fetch price data for comparison
+            df_price = fetch_data(symbol, '1d')
+        
+        if oi_current.get('error'):
+            st.error(f"⚠️ Error fetching OI: {oi_current['error']}")
+            st.info("""
+            **Troubleshooting:**
+            - Ensure your SOCKS5 proxy is configured in the sidebar
+            - Verify the symbol has futures on Binance (e.g., BTC-USD → BTCUSDT)
+            - Check proxy connectivity
+            """)
+        else:
+            # --- CURRENT OI METRICS ---
+            current_oi = oi_current['oi']
+            binance_sym = oi_current.get('binance_symbol', symbol)
+            
+            # Calculate OI change from history
+            oi_change_pct = 0
+            if not oi_history.empty and len(oi_history) >= 2:
+                first_oi = oi_history['sumOpenInterest'].iloc[0]
+                last_oi = oi_history['sumOpenInterest'].iloc[-1]
+                oi_change_pct = safe_pct_change(last_oi, first_oi)
+            
+            # Get price change for same period
+            price_change_pct = 0
+            if not df_price.empty and len(df_price) >= 2:
+                lookback = min(len(df_price), oi_limit)
+                first_price = df_price['close'].iloc[-lookback]
+                last_price = df_price['close'].iloc[-1]
+                price_change_pct = safe_pct_change(last_price, first_price)
+            
+            # Get advisory signal
+            advisory = analyze_oi_advisory(oi_change_pct, price_change_pct)
+            
+            # --- ADVISORY BANNER ---
+            if advisory['color'] == 'green':
+                st.success(f"""
+                ### {advisory['emoji']} {advisory['label']}
+                **{advisory['description']}**
+                
+                📋 **Advisory:** {advisory['advisory']}
+                """)
+            elif advisory['color'] == 'red':
+                st.error(f"""
+                ### {advisory['emoji']} {advisory['label']}
+                **{advisory['description']}**
+                
+                📋 **Advisory:** {advisory['advisory']}
+                """)
+            elif advisory['color'] == 'orange':
+                st.warning(f"""
+                ### {advisory['emoji']} {advisory['label']}
+                **{advisory['description']}**
+                
+                📋 **Advisory:** {advisory['advisory']}
+                """)
+            elif advisory['color'] == 'yellow':
+                st.warning(f"""
+                ### {advisory['emoji']} {advisory['label']}
+                **{advisory['description']}**
+                
+                📋 **Advisory:** {advisory['advisory']}
+                """)
+            else:
+                st.info(f"""
+                ### {advisory['emoji']} {advisory['label']}
+                **{advisory['description']}**
+                
+                📋 **Advisory:** {advisory['advisory']}
+                """)
+            
+            st.divider()
+            
+            # --- KEY METRICS ---
+            st.markdown("### 📊 Key Metrics")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                # Format OI with appropriate suffix
+                if current_oi >= 1_000_000:
+                    oi_display = f"{current_oi/1_000_000:.2f}M"
+                elif current_oi >= 1_000:
+                    oi_display = f"{current_oi/1_000:.2f}K"
+                else:
+                    oi_display = f"{current_oi:.2f}"
+                st.metric("Current OI", oi_display, delta=f"{oi_change_pct:+.1f}%")
+            
+            with col2:
+                oi_trend = "📈 Rising" if oi_change_pct > 0 else "📉 Falling" if oi_change_pct < 0 else "➡️ Flat"
+                st.metric("OI Trend", oi_trend)
+            
+            with col3:
+                if not df_price.empty:
+                    current_price = df_price['close'].iloc[-1]
+                    st.metric("Price", f"${current_price:,.2f}", delta=f"{price_change_pct:+.1f}%")
+                else:
+                    st.metric("Price", "N/A")
+            
+            with col4:
+                st.metric("Symbol", binance_sym)
+            
+            st.divider()
+            
+            # --- OI vs PRICE CHART ---
+            st.markdown("### 📈 Open Interest vs Price")
+            
+            if not oi_history.empty and not df_price.empty:
+                # Create dual-axis chart
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                # OI line (primary Y-axis)
+                fig.add_trace(
+                    go.Scatter(
+                        x=oi_history['timestamp'],
+                        y=oi_history['sumOpenInterest'],
+                        name="Open Interest",
+                        line=dict(color='#00bcd4', width=2),
+                        fill='tozeroy',
+                        fillcolor='rgba(0, 188, 212, 0.1)'
+                    ),
+                    secondary_y=False
+                )
+                
+                # Match price data to OI timeframe
+                oi_start = oi_history['timestamp'].min()
+                df_price_filtered = df_price[df_price['timestamp'] >= oi_start]
+                
+                if not df_price_filtered.empty:
+                    # Price line (secondary Y-axis)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df_price_filtered['timestamp'],
+                            y=df_price_filtered['close'],
+                            name="Price",
+                            line=dict(color='#ff9800', width=2)
+                        ),
+                        secondary_y=True
+                    )
+                
+                fig.update_layout(
+                    height=400,
+                    template='plotly_dark',
+                    hovermode='x unified',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                fig.update_yaxes(title_text="Open Interest", secondary_y=False, tickformat=".2s")
+                fig.update_yaxes(title_text="Price (USD)", secondary_y=True, tickprefix="$")
+                
+                st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+            else:
+                st.warning("Insufficient data for chart")
+            
+            # --- OI VALUE CHART ---
+            if not oi_history.empty and 'sumOpenInterestValue' in oi_history.columns:
+                st.markdown("### 💰 OI Value (USD)")
+                
+                fig_val = go.Figure()
+                fig_val.add_trace(go.Scatter(
+                    x=oi_history['timestamp'],
+                    y=oi_history['sumOpenInterestValue'],
+                    name="OI Value",
+                    line=dict(color='#4caf50', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(76, 175, 80, 0.1)'
+                ))
+                fig_val.update_layout(
+                    height=250,
+                    template='plotly_dark',
+                    yaxis_tickprefix="$",
+                    yaxis_tickformat=".2s"
+                )
+                st.plotly_chart(fig_val, use_container_width=True)
+            
+            # --- EDUCATIONAL GUIDE ---
+            with st.expander("📖 How to Read Open Interest"):
+                st.markdown("""
+                **Open Interest (OI)** = Total outstanding futures contracts
+                
+                | OI Change | Price Change | Signal | Meaning |
+                |-----------|-------------|--------|---------|
+                | ↑ Rising | ↑ Rising | 🟢 **Bullish** | New money entering, trend strengthening |
+                | ↑ Rising | ↓ Falling | 🔴 **Bearish** | Short sellers entering aggressively |
+                | ↓ Falling | ↑ Rising | 🟡 **Weak Rally** | Short covering, may not sustain |
+                | ↓ Falling | ↓ Falling | 🟠 **Capitulation** | Liquidations, potential bottom |
+                
+                **For Long-Term Investors:**
+                - 🟢 STRONG TREND = Favorable for holding/adding
+                - 🟡 WEAK RALLY = Be cautious, wait for confirmation
+                - 🔴 SHORT PRESSURE = Consider reducing exposure
+                - 🟠 CAPITULATION = Watch for reversal opportunities
+                """)
+    else:
+        st.info("""
+        👆 **Configure settings and click 'Analyze OI'**
+        
+        📊 **What you'll see:**
+        - Current Open Interest and trend
+        - OI vs Price divergence analysis
+        - Investment advisory signals
+        
+        ⚙️ **Setup (Streamlit Cloud):**
+        1. Add `SOCKS5_PROXY_URL` to your Streamlit Secrets
+        2. Format: `socks5://user:pass@host:port`
+        3. Select a symbol (must have Binance Futures)
+        4. Click 'Analyze OI'
+        """)
+
 # Default
 if analysis_mode == "📊 Single Asset" and ('analyze_btn' not in dir() or not analyze_btn):
     st.info("""
@@ -1202,6 +1606,8 @@ if analysis_mode == "📊 Single Asset" and ('analyze_btn' not in dir() or not a
 - **Single Asset**: Full analysis with zones & signals
 - **Watchlist**: Quick overview of multiple assets  
 - **Timeframe Compare**: Daily vs Weekly alignment
+- **Open Interest Monitor**: Futures OI analysis & advisory
 
 **Tip:** Focus on weekly charts. When both Daily AND Weekly show accumulation = high confidence entry.
     """)
+
