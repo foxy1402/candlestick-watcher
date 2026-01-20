@@ -966,11 +966,11 @@ with st.sidebar:
         oi_period = st.selectbox(
             "OI Period",
             ["1h", "4h", "1d"],
-            format_func=lambda x: {"1h": "Hourly", "4h": "4-Hour", "1d": "Daily"}[x],
-            index=0
+            format_func=lambda x: {"1h": "Hourly (2 days)", "4h": "4-Hour (8 days)", "1d": "Daily (30 days)"}[x],
+            index=2  # Default to daily for longer view
         )
         
-        oi_limit = st.slider("History Bars", min_value=24, max_value=200, value=48)
+        oi_limit = st.slider("History Bars", min_value=30, max_value=500, value=100, help="More bars = longer history")
         
         st.divider()
         st.subheader("🔧 Proxy Status")
@@ -1656,14 +1656,54 @@ elif analysis_mode == "📈 Open Interest Monitor":
             
             st.divider()
             
-            # --- OI vs PRICE CHART ---
-            st.markdown("### 📈 Open Interest vs Price")
+            # --- OI vs PRICE CHART WITH SIGNALS ---
+            st.markdown("### 📈 Open Interest vs Price (with Historical Signals)")
             
             if not oi_history.empty and not df_price.empty:
-                # Create dual-axis chart
+                # Calculate historical signals for each point
+                oi_history = oi_history.copy()
+                oi_history['oi_pct_change'] = oi_history['sumOpenInterest'].pct_change(periods=5) * 100
+                
+                # Match price data to OI timeframe
+                oi_start = oi_history['timestamp'].min()
+                df_price_filtered = df_price[df_price['timestamp'] >= oi_start].copy()
+                
+                # Merge price changes into OI history for signal calculation
+                if not df_price_filtered.empty:
+                    df_price_filtered['price_pct_change'] = df_price_filtered['close'].pct_change(periods=5) * 100
+                    
+                    # Create signal markers
+                    bullish_points = []
+                    bearish_points = []
+                    weak_points = []
+                    cap_points = []
+                    
+                    for i, row in oi_history.iterrows():
+                        oi_chg = row.get('oi_pct_change', 0)
+                        if pd.isna(oi_chg):
+                            continue
+                        
+                        # Find closest price data
+                        ts = row['timestamp']
+                        price_match = df_price_filtered[df_price_filtered['timestamp'] <= ts]
+                        if price_match.empty:
+                            continue
+                        price_chg = price_match['price_pct_change'].iloc[-1] if not pd.isna(price_match['price_pct_change'].iloc[-1]) else 0
+                        
+                        # Apply signal logic
+                        if oi_chg > 0.5 and price_chg > 0.5:
+                            bullish_points.append((ts, row['sumOpenInterest'], 'Bullish'))
+                        elif oi_chg > 0.5 and price_chg < -0.5:
+                            bearish_points.append((ts, row['sumOpenInterest'], 'Bearish'))
+                        elif oi_chg < -0.5 and price_chg > 0.5:
+                            weak_points.append((ts, row['sumOpenInterest'], 'Weak Rally'))
+                        elif oi_chg < -0.5 and price_chg < -0.5:
+                            cap_points.append((ts, row['sumOpenInterest'], 'Capitulation'))
+                
+                # Create chart
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
                 
-                # OI line (primary Y-axis)
+                # OI line
                 fig.add_trace(
                     go.Scatter(
                         x=oi_history['timestamp'],
@@ -1676,12 +1716,8 @@ elif analysis_mode == "📈 Open Interest Monitor":
                     secondary_y=False
                 )
                 
-                # Match price data to OI timeframe
-                oi_start = oi_history['timestamp'].min()
-                df_price_filtered = df_price[df_price['timestamp'] >= oi_start]
-                
+                # Price line
                 if not df_price_filtered.empty:
-                    # Price line (secondary Y-axis)
                     fig.add_trace(
                         go.Scatter(
                             x=df_price_filtered['timestamp'],
@@ -1692,8 +1728,49 @@ elif analysis_mode == "📈 Open Interest Monitor":
                         secondary_y=True
                     )
                 
+                # Add signal markers
+                if bullish_points:
+                    fig.add_trace(go.Scatter(
+                        x=[p[0] for p in bullish_points],
+                        y=[p[1] for p in bullish_points],
+                        mode='markers',
+                        name='🟢 Bullish',
+                        marker=dict(color='lime', size=10, symbol='triangle-up'),
+                        hovertemplate='Bullish Signal<extra></extra>'
+                    ), secondary_y=False)
+                
+                if bearish_points:
+                    fig.add_trace(go.Scatter(
+                        x=[p[0] for p in bearish_points],
+                        y=[p[1] for p in bearish_points],
+                        mode='markers',
+                        name='🔴 Bearish',
+                        marker=dict(color='red', size=10, symbol='triangle-down'),
+                        hovertemplate='Bearish Signal<extra></extra>'
+                    ), secondary_y=False)
+                
+                if weak_points:
+                    fig.add_trace(go.Scatter(
+                        x=[p[0] for p in weak_points],
+                        y=[p[1] for p in weak_points],
+                        mode='markers',
+                        name='🟡 Weak Rally',
+                        marker=dict(color='yellow', size=8, symbol='circle'),
+                        hovertemplate='Weak Rally<extra></extra>'
+                    ), secondary_y=False)
+                
+                if cap_points:
+                    fig.add_trace(go.Scatter(
+                        x=[p[0] for p in cap_points],
+                        y=[p[1] for p in cap_points],
+                        mode='markers',
+                        name='🟠 Capitulation',
+                        marker=dict(color='orange', size=8, symbol='diamond'),
+                        hovertemplate='Capitulation<extra></extra>'
+                    ), secondary_y=False)
+                
                 fig.update_layout(
-                    height=400,
+                    height=500,
                     template='plotly_dark',
                     hovermode='x unified',
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -1702,6 +1779,9 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 fig.update_yaxes(title_text="Price (USD)", secondary_y=True, tickprefix="$")
                 
                 st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+                
+                # Signal count summary
+                st.caption(f"📊 Historical Signals: 🟢 {len(bullish_points)} Bullish | 🔴 {len(bearish_points)} Bearish | 🟡 {len(weak_points)} Weak Rally | 🟠 {len(cap_points)} Capitulation")
             else:
                 st.warning("Insufficient data for chart")
             
