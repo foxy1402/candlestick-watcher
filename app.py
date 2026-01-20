@@ -157,7 +157,7 @@ def fetch_long_short_ratio(symbol: str) -> dict:
         url = f"https://api.coinalyze.net/v1/long-short-ratio-history"
         params = {
             'symbols': coinalyze_symbol,
-            'interval': 'hour',
+            'interval': '1hour',  # Must be '1hour' not 'hour'
             'from': from_time,
             'to': to_time
         }
@@ -989,27 +989,25 @@ with st.sidebar:
     elif analysis_mode == "📈 Open Interest Monitor":
         symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
         
-        # Coinalyze supports unlimited history!
+        # Coinalyze supports unlimited history - simplified options
         oi_period = st.selectbox(
             "OI Resolution",
             ["daily", "weekly"],
-            format_func=lambda x: {"daily": "Daily", "weekly": "Weekly"}[x],
+            format_func=lambda x: {"daily": "Daily (1 year)", "weekly": "Weekly (2 years)"}[x],
             index=0
         )
         
-        oi_days = st.slider("History (days)", min_value=30, max_value=730, value=180, help="Coinalyze supports unlimited history")
+        # Set max days based on period selection
+        oi_days = 365 if oi_period == "daily" else 730
         
         st.divider()
         st.subheader("🔑 API Status")
         
-        # Check if Coinalyze API key is configured
         api_configured = bool(os.environ.get('COINALYZE_API_KEY', ''))
-        
         if api_configured:
-            st.success("✅ Coinalyze API key configured")
+            st.success("✅ Coinalyze API configured")
         else:
             st.error("❌ COINALYZE_API_KEY not set")
-            st.caption("Add to Streamlit Secrets")
         
         oi_analyze_btn = st.button("📈 Analyze OI", use_container_width=True, type="primary")
 
@@ -1586,11 +1584,11 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 last_oi = oi_history['sumOpenInterest'].iloc[-1]
                 oi_change_pct = safe_pct_change(last_oi, first_oi)
             
-            # Price change
+            # Price change (match to OI history length)
             price_change_pct = 0
             current_price = 0
             if not df_price.empty and len(df_price) >= 2:
-                lookback = min(len(df_price), oi_limit)
+                lookback = min(len(df_price), len(oi_history)) if not oi_history.empty else 30
                 first_price = df_price['close'].iloc[-lookback]
                 current_price = df_price['close'].iloc[-1]
                 price_change_pct = safe_pct_change(current_price, first_price)
