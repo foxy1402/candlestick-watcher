@@ -50,7 +50,8 @@ def fetch_open_interest(symbol: str) -> dict:
         
         data = response.json()
         if data and len(data) > 0:
-            current_oi = float(data[0].get('openInterest', 0))
+            # Coinalyze returns 'value' for current OI, not 'openInterest'
+            current_oi = float(data[0].get('value', 0))
             return {
                 'symbol': symbol,
                 'coinalyze_symbol': coinalyze_symbol,
@@ -130,10 +131,11 @@ def fetch_funding_rate(symbol: str) -> dict:
         
         data = response.json()
         if data and len(data) > 0:
-            rate = float(data[0].get('fundingRate', 0)) * 100  # Convert to percentage
+            # Coinalyze returns 'value' for funding rate (already in percentage form 0.01 = 0.01%)
+            rate = float(data[0].get('value', 0))
             return {
                 'rate': rate,
-                'timestamp': data[0].get('updateTime'),
+                'timestamp': data[0].get('update'),
                 'error': None
             }
         return {'rate': 0, 'error': 'No data'}
@@ -170,17 +172,11 @@ def fetch_long_short_ratio(symbol: str) -> dict:
         
         data = response.json()
         if data and len(data) > 0 and 'history' in data[0] and len(data[0]['history']) > 0:
-            # Get latest value (close)
+            # Coinalyze returns: r=ratio, l=long%, s=short% directly
             latest = data[0]['history'][-1]
-            ratio = float(latest.get('c', 1.0))
-            
-            # Calculate percentages from ratio
-            if ratio >= 1:
-                long_pct = ratio / (1 + ratio) * 100
-                short_pct = 100 - long_pct
-            else:
-                short_pct = 1 / (1 + ratio) * 100
-                long_pct = 100 - short_pct
+            ratio = float(latest.get('r', 1.0))
+            long_pct = float(latest.get('l', 50))
+            short_pct = float(latest.get('s', 50))
             
             return {
                 'ratio': ratio,
