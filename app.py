@@ -79,21 +79,25 @@ def fetch_open_interest(symbol: str, proxy_url: str = '') -> dict:
         return {'error': str(e), 'oi': 0, 'symbol': symbol}
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_open_interest_history(symbol: str, period: str = '1h', limit: int = 48, proxy_url: str = '') -> pd.DataFrame:
+def fetch_open_interest_history(symbol: str, period: str = '1d', limit: int = 500, proxy_url: str = '') -> pd.DataFrame:
     """Fetch historical Open Interest data from Binance Futures API."""
     try:
         binance_symbol = convert_symbol_to_binance(symbol)
         session = get_proxy_session(proxy_url)
         
-        # Historical OI (up to 30 days)
+        # Map period to Binance-supported values
+        # Binance supports: 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+        # For weekly view, we use 1d with max limit (500 bars = ~16 months)
+        api_period = '1d' if period == '1w' else period
+        
         url = f"https://fapi.binance.com/futures/data/openInterestHist"
         params = {
             'symbol': binance_symbol,
-            'period': period,  # 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+            'period': api_period,
             'limit': limit
         }
         
-        response = session.get(url, params=params, timeout=10)
+        response = session.get(url, params=params, timeout=15)
         
         if response.status_code != 200:
             return pd.DataFrame()
@@ -965,12 +969,13 @@ with st.sidebar:
         
         oi_period = st.selectbox(
             "OI Period",
-            ["1h", "4h", "1d"],
-            format_func=lambda x: {"1h": "Hourly (2 days)", "4h": "4-Hour (8 days)", "1d": "Daily (30 days)"}[x],
-            index=2  # Default to daily for longer view
+            ["1d", "1w"],
+            format_func=lambda x: {"1d": "Daily (~30 days)", "1w": "Weekly (~6 months)"}[x],
+            index=0
         )
         
-        oi_limit = st.slider("History Bars", min_value=30, max_value=500, value=100, help="More bars = longer history")
+        # Max limit for Binance OI History API is 500
+        oi_limit = 500
         
         st.divider()
         st.subheader("🔧 Proxy Status")
@@ -1814,27 +1819,6 @@ elif analysis_mode == "📈 Open Interest Monitor":
                     """)
                 elif price_rows == 0:
                     st.error("❌ Price data failed to load from Yahoo Finance")
-            
-            # --- OI VALUE CHART ---
-            if not oi_history.empty and 'sumOpenInterestValue' in oi_history.columns:
-                st.markdown("### 💰 OI Value (USD)")
-                
-                fig_val = go.Figure()
-                fig_val.add_trace(go.Scatter(
-                    x=oi_history['timestamp'],
-                    y=oi_history['sumOpenInterestValue'],
-                    name="OI Value",
-                    line=dict(color='#4caf50', width=2),
-                    fill='tozeroy',
-                    fillcolor='rgba(76, 175, 80, 0.1)'
-                ))
-                fig_val.update_layout(
-                    height=250,
-                    template='plotly_dark',
-                    yaxis_tickprefix="$",
-                    yaxis_tickformat=".2s"
-                )
-                st.plotly_chart(fig_val, use_container_width=True)
             
             # --- EDUCATIONAL GUIDE ---
             with st.expander("📖 How to Read Open Interest"):
