@@ -1527,6 +1527,18 @@ elif analysis_mode == "📈 Open Interest Monitor":
             ls_ratio = fetch_long_short_ratio(symbol, proxy)
             df_price = fetch_data(symbol, '1d')
         
+        # Debug expander - show what was fetched
+        with st.expander("🔧 Debug: API Response Status", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**OI Current:**", "✅" if not oi_current.get('error') else f"❌ {oi_current.get('error')}")
+                st.write("**OI History:**", f"✅ {len(oi_history)} rows" if not oi_history.empty else "❌ Empty")
+                st.write("**Funding Rate:**", "✅" if not funding.get('error') else f"❌ {funding.get('error')}")
+            with col2:
+                st.write("**L/S Ratio:**", "✅" if not ls_ratio.get('error') else f"❌ {ls_ratio.get('error')}")
+                st.write("**Price Data:**", f"✅ {len(df_price)} rows" if not df_price.empty else "❌ Empty")
+                st.write("**Proxy:**", "✅ Configured" if proxy or os.environ.get('SOCKS5_PROXY_URL') else "❌ Not set")
+        
         # Check for critical errors
         has_error = oi_current.get('error') and 'timeout' not in str(oi_current.get('error', '')).lower()
         
@@ -1783,7 +1795,25 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 # Signal count summary
                 st.caption(f"📊 Historical Signals: 🟢 {len(bullish_points)} Bullish | 🔴 {len(bearish_points)} Bearish | 🟡 {len(weak_points)} Weak Rally | 🟠 {len(cap_points)} Capitulation")
             else:
-                st.warning("Insufficient data for chart")
+                # Debug info - show which data source is missing
+                oi_rows = len(oi_history) if not oi_history.empty else 0
+                price_rows = len(df_price) if not df_price.empty else 0
+                
+                st.warning(f"📊 Data Status: OI History: {oi_rows} rows | Price Data: {price_rows} rows")
+                
+                if oi_rows == 0:
+                    st.error("""
+                    **❌ OI History Failed to Load**
+                    
+                    Possible causes:
+                    1. SOCKS5 proxy not configured or not working
+                    2. Binance API blocked (common from USA without proxy)
+                    3. Symbol doesn't have futures data
+                    
+                    **Fix:** Check `SOCKS5_PROXY_URL` in Streamlit Secrets
+                    """)
+                elif price_rows == 0:
+                    st.error("❌ Price data failed to load from Yahoo Finance")
             
             # --- OI VALUE CHART ---
             if not oi_history.empty and 'sumOpenInterestValue' in oi_history.columns:
