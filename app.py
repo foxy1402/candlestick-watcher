@@ -16,113 +16,114 @@ st.set_page_config(layout="wide", page_title="Crypto Pattern Watcher", page_icon
 # --- Session State Initialization ---
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = ['BTC-USD', 'ETH-USD', 'SOL-USD']
-if 'socks5_proxy' not in st.session_state:
-    st.session_state.socks5_proxy = ''
 
-# --- Open Interest Helper Functions ---
-def convert_symbol_to_binance(symbol: str) -> str:
-    """Convert Yahoo Finance symbol to Binance Futures format."""
-    # BTC-USD -> BTCUSDT, ETH-USD -> ETHUSDT
-    symbol = symbol.upper().replace('-USD', 'USDT').replace('USDT', 'USDT')
-    if not symbol.endswith('USDT'):
-        symbol = symbol + 'USDT'
-    return symbol
+# --- Coinalyze API Helper Functions ---
+def get_coinalyze_api_key() -> str:
+    """Get Coinalyze API key from environment variable."""
+    return os.environ.get('COINALYZE_API_KEY', '')
 
-def get_proxy_session(proxy_url: str = None) -> requests.Session:
+def convert_symbol_to_coinalyze(symbol: str) -> str:
+    """Convert Yahoo Finance symbol to Coinalyze format.
+    BTC-USD -> BTCUSD_PERP.A (Binance perpetual)
     """
-    Create a requests session with SOCKS5 proxy for Binance API.
-    Reads proxy URL from environment variable for security.
-    
-    Environment variable: SOCKS5_PROXY_URL
-    Format: socks5://user:password@host:port
-    """
-    session = requests.Session()
-    
-    # Priority: 1) Function arg, 2) Environment variable, 3) Session state
-    if not proxy_url:
-        proxy_url = os.environ.get('SOCKS5_PROXY_URL', '')
-    if not proxy_url and 'socks5_proxy' in st.session_state:
-        proxy_url = st.session_state.socks5_proxy
-    
-    if proxy_url and proxy_url.strip():
-        session.proxies = {
-            'http': proxy_url,
-            'https': proxy_url
-        }
-    return session
+    base = symbol.upper().replace('-USD', '').replace('USDT', '')
+    return f"{base}USD_PERP.A"  # Binance perpetual format
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_open_interest(symbol: str, proxy_url: str = '') -> dict:
-    """Fetch current Open Interest from Binance Futures API."""
+def fetch_open_interest(symbol: str) -> dict:
+    """Fetch current Open Interest from Coinalyze API."""
     try:
-        binance_symbol = convert_symbol_to_binance(symbol)
-        session = get_proxy_session(proxy_url)
+        api_key = get_coinalyze_api_key()
+        if not api_key:
+            return {'error': 'COINALYZE_API_KEY not set', 'oi': 0, 'symbol': symbol}
         
-        # Current OI
-        url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={binance_symbol}"
-        response = session.get(url, timeout=10)
+        coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
+        
+        url = f"https://api.coinalyze.net/v1/open-interest"
+        params = {'symbols': coinalyze_symbol}
+        headers = {'api_key': api_key}
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         
         if response.status_code != 200:
             return {'error': f'API error: {response.status_code}', 'oi': 0, 'symbol': symbol}
         
         data = response.json()
-        current_oi = float(data.get('openInterest', 0))
-        
-        return {
-            'symbol': symbol,
-            'binance_symbol': binance_symbol,
-            'oi': current_oi,
-            'timestamp': datetime.now().isoformat(),
-            'error': None
-        }
+        if data and len(data) > 0:
+            current_oi = float(data[0].get('openInterest', 0))
+            return {
+                'symbol': symbol,
+                'coinalyze_symbol': coinalyze_symbol,
+                'oi': current_oi,
+                'timestamp': datetime.now().isoformat(),
+                'error': None
+            }
+        return {'error': 'No data', 'oi': 0, 'symbol': symbol}
     except Exception as e:
         return {'error': str(e), 'oi': 0, 'symbol': symbol}
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_open_interest_history(symbol: str, period: str = '1d', limit: int = 500, proxy_url: str = '') -> pd.DataFrame:
-    """Fetch historical Open Interest data from Binance Futures API."""
+def fetch_open_interest_history(symbol: str, period: str = 'daily', days: int = 365) -> pd.DataFrame:
+    """Fetch historical Open Interest data from Coinalyze API.
+    
+    Coinalyze supports unlimited history!
+    Intervals: minute, 5minute, 15minute, 30minute, hour, 2hour, 4hour, 6hour, 12hour, daily, weekly
+    """
     try:
-        binance_symbol = convert_symbol_to_binance(symbol)
-        session = get_proxy_session(proxy_url)
+        api_key = get_coinalyze_api_key()
+        if not api_key:
+            return pd.DataFrame()
         
-        # Binance OI History API only returns last 30 days of data
-        # Supported periods: 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
-        url = f"https://fapi.binance.com/futures/data/openInterestHist"
+        coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
+        
+        # Calculate time range
+        to_time = int(datetime.now().timestamp())
+        from_time = int((datetime.now() - timedelta(days=days)).timestamp())
+        
+        url = f"https://api.coinalyze.net/v1/open-interest-history"
         params = {
-            'symbol': binance_symbol,
-            'period': period,
-            'limit': limit
+            'symbols': coinalyze_symbol,
+            'interval': period,
+            'from': from_time,
+            'to': to_time
         }
+        headers = {'api_key': api_key}
         
-        response = session.get(url, params=params, timeout=15)
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code != 200:
             return pd.DataFrame()
         
         data = response.json()
-        if not data:
+        if not data or len(data) == 0 or 'history' not in data[0]:
             return pd.DataFrame()
         
-        df = pd.DataFrame(data)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df['sumOpenInterest'] = df['sumOpenInterest'].astype(float)
-        df['sumOpenInterestValue'] = df['sumOpenInterestValue'].astype(float)
+        history = data[0]['history']
+        df = pd.DataFrame(history)
+        
+        # Coinalyze returns OHLC format for OI: t=timestamp, o=open, h=high, l=low, c=close
+        df['timestamp'] = pd.to_datetime(df['t'], unit='s')
+        df['sumOpenInterest'] = df['c'].astype(float)  # Use close value for current OI
         
         return df
     except Exception as e:
         return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_funding_rate(symbol: str, proxy_url: str = '') -> dict:
-    """Fetch current funding rate from Binance Futures API - key investment indicator."""
+def fetch_funding_rate(symbol: str) -> dict:
+    """Fetch current funding rate from Coinalyze API."""
     try:
-        binance_symbol = convert_symbol_to_binance(symbol)
-        session = get_proxy_session(proxy_url)
+        api_key = get_coinalyze_api_key()
+        if not api_key:
+            return {'error': 'API key not set', 'rate': 0}
         
-        # Funding Rate endpoint
-        url = f"https://fapi.binance.com/fapi/v1/fundingRate"
-        params = {'symbol': binance_symbol, 'limit': 1}
-        response = session.get(url, params=params, timeout=10)
+        coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
+        
+        url = f"https://api.coinalyze.net/v1/funding-rate"
+        params = {'symbols': coinalyze_symbol}
+        headers = {'api_key': api_key}
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         
         if response.status_code != 200:
             return {'error': f'API {response.status_code}', 'rate': 0}
@@ -132,7 +133,7 @@ def fetch_funding_rate(symbol: str, proxy_url: str = '') -> dict:
             rate = float(data[0].get('fundingRate', 0)) * 100  # Convert to percentage
             return {
                 'rate': rate,
-                'timestamp': data[0].get('fundingTime'),
+                'timestamp': data[0].get('updateTime'),
                 'error': None
             }
         return {'rate': 0, 'error': 'No data'}
@@ -140,33 +141,57 @@ def fetch_funding_rate(symbol: str, proxy_url: str = '') -> dict:
         return {'rate': 0, 'error': str(e)}
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_long_short_ratio(symbol: str, proxy_url: str = '') -> dict:
-    """Fetch long/short ratio - shows market sentiment."""
+def fetch_long_short_ratio(symbol: str) -> dict:
+    """Fetch long/short ratio from Coinalyze API."""
     try:
-        binance_symbol = convert_symbol_to_binance(symbol)
-        session = get_proxy_session(proxy_url)
+        api_key = get_coinalyze_api_key()
+        if not api_key:
+            return {'error': 'API key not set', 'ratio': 1.0, 'long_pct': 50, 'short_pct': 50}
         
-        url = f"https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
-        params = {'symbol': binance_symbol, 'period': '1h', 'limit': 1}
-        response = session.get(url, params=params, timeout=10)
+        coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
+        
+        # Get recent L/S ratio history
+        to_time = int(datetime.now().timestamp())
+        from_time = int((datetime.now() - timedelta(hours=24)).timestamp())
+        
+        url = f"https://api.coinalyze.net/v1/long-short-ratio-history"
+        params = {
+            'symbols': coinalyze_symbol,
+            'interval': 'hour',
+            'from': from_time,
+            'to': to_time
+        }
+        headers = {'api_key': api_key}
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         
         if response.status_code != 200:
             return {'error': f'API {response.status_code}', 'ratio': 1.0, 'long_pct': 50, 'short_pct': 50}
         
         data = response.json()
-        if data and len(data) > 0:
-            ratio = float(data[0].get('longShortRatio', 1.0))
-            long_account = float(data[0].get('longAccount', 0.5)) * 100
-            short_account = float(data[0].get('shortAccount', 0.5)) * 100
+        if data and len(data) > 0 and 'history' in data[0] and len(data[0]['history']) > 0:
+            # Get latest value (close)
+            latest = data[0]['history'][-1]
+            ratio = float(latest.get('c', 1.0))
+            
+            # Calculate percentages from ratio
+            if ratio >= 1:
+                long_pct = ratio / (1 + ratio) * 100
+                short_pct = 100 - long_pct
+            else:
+                short_pct = 1 / (1 + ratio) * 100
+                long_pct = 100 - short_pct
+            
             return {
                 'ratio': ratio,
-                'long_pct': long_account,
-                'short_pct': short_account,
+                'long_pct': long_pct,
+                'short_pct': short_pct,
                 'error': None
             }
         return {'ratio': 1.0, 'long_pct': 50, 'short_pct': 50, 'error': 'No data'}
     except Exception as e:
         return {'ratio': 1.0, 'long_pct': 50, 'short_pct': 50, 'error': str(e)}
+
 
 def analyze_oi_advisory(oi_change_pct: float, price_change_pct: float) -> dict:
     """
@@ -964,32 +989,27 @@ with st.sidebar:
     elif analysis_mode == "📈 Open Interest Monitor":
         symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
         
-        # Binance OI History API only provides last 30 days max
+        # Coinalyze supports unlimited history!
         oi_period = st.selectbox(
             "OI Resolution",
-            ["1h", "4h", "1d"],
-            format_func=lambda x: {"1h": "Hourly (500 hrs = ~20 days)", "4h": "4-Hourly (500 bars = ~80 days*)", "1d": "Daily (30 days max)"}[x],
-            index=2,
-            help="⚠️ Binance API only stores last 30 days of OI data"
+            ["daily", "weekly"],
+            format_func=lambda x: {"daily": "Daily", "weekly": "Weekly"}[x],
+            index=0
         )
         
-        st.caption("⚠️ Note: Binance OI History API limited to ~30 days")
-        
-        # Max limit for Binance OI History API is 500
-        oi_limit = 500
+        oi_days = st.slider("History (days)", min_value=30, max_value=730, value=180, help="Coinalyze supports unlimited history")
         
         st.divider()
-        st.subheader("🔧 Proxy Status")
+        st.subheader("🔑 API Status")
         
-        # Check if SOCKS5 proxy is configured via environment variable
-        proxy_configured = bool(os.environ.get('SOCKS5_PROXY_URL', ''))
+        # Check if Coinalyze API key is configured
+        api_configured = bool(os.environ.get('COINALYZE_API_KEY', ''))
         
-        if proxy_configured:
-            st.success("✅ SOCKS5 proxy configured via environment")
+        if api_configured:
+            st.success("✅ Coinalyze API key configured")
         else:
-            st.warning("⚠️ SOCKS5 proxy not configured")
-            st.caption("Set `SOCKS5_PROXY_URL` in Streamlit Secrets")
-            st.caption("Format: `socks5://user:pass@host:port`")
+            st.error("❌ COINALYZE_API_KEY not set")
+            st.caption("Add to Streamlit Secrets")
         
         oi_analyze_btn = st.button("📈 Analyze OI", use_container_width=True, type="primary")
 
@@ -1520,17 +1540,15 @@ elif analysis_mode == "🔄 Timeframe Compare":
 # Open Interest Monitor
 elif analysis_mode == "📈 Open Interest Monitor":
     st.subheader(f"📈 {symbol} - Derivatives Analysis")
-    st.caption("Open Interest | Funding Rate | Long/Short Ratio | Investment Score")
+    st.caption("Open Interest | Funding Rate | Long/Short Ratio | Investment Score | Powered by Coinalyze")
     
     if 'oi_analyze_btn' in dir() and oi_analyze_btn:
-        proxy = st.session_state.socks5_proxy
-        
         with st.spinner(f"Fetching derivatives data for {symbol}..."):
-            # Fetch all derivatives data
-            oi_current = fetch_open_interest(symbol, proxy)
-            oi_history = fetch_open_interest_history(symbol, oi_period, oi_limit, proxy)
-            funding = fetch_funding_rate(symbol, proxy)
-            ls_ratio = fetch_long_short_ratio(symbol, proxy)
+            # Fetch all derivatives data from Coinalyze
+            oi_current = fetch_open_interest(symbol)
+            oi_history = fetch_open_interest_history(symbol, oi_period, oi_days)
+            funding = fetch_funding_rate(symbol)
+            ls_ratio = fetch_long_short_ratio(symbol)
             df_price = fetch_data(symbol, '1d')
         
         # Debug expander - show what was fetched
@@ -1543,7 +1561,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
             with col2:
                 st.write("**L/S Ratio:**", "✅" if not ls_ratio.get('error') else f"❌ {ls_ratio.get('error')}")
                 st.write("**Price Data:**", f"✅ {len(df_price)} rows" if not df_price.empty else "❌ Empty")
-                st.write("**Proxy:**", "✅ Configured" if proxy or os.environ.get('SOCKS5_PROXY_URL') else "❌ Not set")
+                st.write("**API Key:**", "✅ Set" if os.environ.get('COINALYZE_API_KEY') else "❌ Not set")
         
         # Check for critical errors
         has_error = oi_current.get('error') and 'timeout' not in str(oi_current.get('error', '')).lower()
@@ -1552,9 +1570,9 @@ elif analysis_mode == "📈 Open Interest Monitor":
             st.error(f"⚠️ API Error: {oi_current['error']}")
             st.info("""
             **Troubleshooting:**
-            - Verify `SOCKS5_PROXY_URL` is set in Streamlit Secrets
-            - Check proxy connectivity (format: `socks5://user:pass@host:port`)
-            - Symbol must have Binance Futures (e.g., BTC-USD → BTCUSDT)
+            - Verify `COINALYZE_API_KEY` is set in Streamlit Secrets
+            - Check your API key is valid at coinalyze.net
+            - Symbol format: BTC-USD → BTCUSD_PERP.A
             """)
         else:
             # --- CALCULATE ALL METRICS ---
@@ -1844,15 +1862,14 @@ elif analysis_mode == "📈 Open Interest Monitor":
         👆 **Configure settings and click 'Analyze OI'**
         
         📊 **What you'll see:**
-        - Current Open Interest and trend
-        - OI vs Price divergence analysis
+        - Current Open Interest and trend (up to 2 years history!)
+        - Funding rate and Long/Short ratio
         - Investment advisory signals
         
         ⚙️ **Setup (Streamlit Cloud):**
-        1. Add `SOCKS5_PROXY_URL` to your Streamlit Secrets
-        2. Format: `socks5://user:pass@host:port`
-        3. Select a symbol (must have Binance Futures)
-        4. Click 'Analyze OI'
+        1. Add `COINALYZE_API_KEY` to your Streamlit Secrets
+        2. Get free API key at coinalyze.net
+        3. Select a symbol and click 'Analyze OI'
         """)
 
 # Default

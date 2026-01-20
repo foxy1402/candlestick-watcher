@@ -5,4 +5,3 @@ plotly
 yfinance
 ta-lib>=0.4.28
 requests>=2.31.0
-PySocks>=1.7.1
