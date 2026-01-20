@@ -985,16 +985,16 @@ with st.sidebar:
     elif analysis_mode == "📈 Open Interest Monitor":
         symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
         
-        # Coinalyze supports unlimited history - simplified options
+        # Coinalyze intervals: 1min, 5min, 15min, 30min, 1hour, 2hour, 4hour, 6hour, 12hour, daily
         oi_period = st.selectbox(
             "OI Resolution",
-            ["daily", "weekly"],
-            format_func=lambda x: {"daily": "Daily (1 year)", "weekly": "Weekly (2 years)"}[x],
-            index=0
+            ["4hour", "daily"],
+            format_func=lambda x: {"4hour": "4-Hour (~3 months)", "daily": "Daily (1 year)"}[x],
+            index=1
         )
         
         # Set max days based on period selection
-        oi_days = 365 if oi_period == "daily" else 730
+        oi_days = 90 if oi_period == "4hour" else 365
         
         st.divider()
         st.subheader("🔑 API Status")
