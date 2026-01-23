@@ -22,6 +22,113 @@ def get_coinalyze_api_key() -> str:
     """Get Coinalyze API key from environment variable."""
     return os.environ.get('COINALYZE_API_KEY', '')
 
+# --- CryptoCompare API Helper Functions ---
+def get_cryptocompare_api_key() -> str:
+    """Get CryptoCompare API key from Streamlit secrets or environment variable."""
+    try:
+        return st.secrets.get('CRYPTOCOMPARE_API_KEY', '')
+    except:
+        pass
+    return os.environ.get('CRYPTOCOMPARE_API_KEY', '')
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_data_cryptocompare(symbol: str, interval: str) -> pd.DataFrame:
+    """Fetch OHLCV data from CryptoCompare API (primary data source)."""
+    try:
+        api_key = get_cryptocompare_api_key()
+        if not api_key:
+            return pd.DataFrame()
+        
+        if '-' in symbol:
+            parts = symbol.split('-')
+            fsym = parts[0].upper()
+            tsym = parts[1].upper() if len(parts) > 1 else 'USD'
+        else:
+            fsym = symbol.replace('USDT', '').replace('USD', '').upper()
+            tsym = 'USD'
+        
+        aggregate = 7 if interval == '1wk' else 1
+        
+        url = "https://min-api.cryptocompare.com/data/histoday"
+        params = {
+            'fsym': fsym,
+            'tsym': tsym,
+            'allData': 'true',
+            'aggregate': aggregate,
+            'api_key': api_key
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+        
+        if data.get('Response') != 'Success' or 'Data' not in data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data['Data'])
+        if df.empty:
+            return pd.DataFrame()
+        
+        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
+        df['volume'] = df['volumeto'].astype(float)
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+        
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
+        
+        df = df[(df['open'] > 0) & (df['close'] > 0)]
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def fetch_data_cryptocompare_raw(symbol: str, interval: str) -> pd.DataFrame:
+    """Fetch from CryptoCompare WITHOUT cache - for parallel threads."""
+    try:
+        api_key = get_cryptocompare_api_key()
+        if not api_key:
+            return pd.DataFrame()
+        
+        if '-' in symbol:
+            parts = symbol.split('-')
+            fsym = parts[0].upper()
+            tsym = parts[1].upper() if len(parts) > 1 else 'USD'
+        else:
+            fsym = symbol.replace('USDT', '').replace('USD', '').upper()
+            tsym = 'USD'
+        
+        aggregate = 7 if interval == '1wk' else 1
+        
+        url = "https://min-api.cryptocompare.com/data/histoday"
+        params = {
+            'fsym': fsym,
+            'tsym': tsym,
+            'allData': 'true',
+            'aggregate': aggregate,
+            'api_key': api_key
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+        
+        if data.get('Response') != 'Success' or 'Data' not in data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data['Data'])
+        if df.empty:
+            return pd.DataFrame()
+        
+        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
+        df['volume'] = df['volumeto'].astype(float)
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+        
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
+        
+        df = df[(df['open'] > 0) & (df['close'] > 0)]
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def convert_symbol_to_coinalyze(symbol: str) -> str:
     """Convert Yahoo Finance symbol to Coinalyze format.
     BTC-USD -> BTCUSD_PERP.A (Binance perpetual)
@@ -373,10 +480,15 @@ PATTERN_RANKINGS = {
 # --- Optimized Functions ---
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch OHLCV data from Yahoo Finance - full history."""
+    """Fetch OHLCV data - CryptoCompare primary, yfinance fallback."""
+    # Try CryptoCompare first (primary)
+    df = fetch_data_cryptocompare(symbol, interval)
+    if not df.empty:
+        return df
+    
+    # Fallback to yfinance if CryptoCompare fails
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        # Fetch full historical data
         df = yf.download(ticker, period="max", interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
@@ -391,11 +503,18 @@ def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
+
 def fetch_data_raw(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch data WITHOUT cache - for use in parallel threads where st.cache doesn't work."""
+    """Fetch data WITHOUT cache - CryptoCompare primary, yfinance fallback."""
+    # Try CryptoCompare first (primary)
+    df = fetch_data_cryptocompare_raw(symbol, interval)
+    if not df.empty:
+        return df
+    
+    # Fallback to yfinance if CryptoCompare fails
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
         df = yf.download(ticker, period="max", interval=interval, progress=False)
@@ -412,8 +531,9 @@ def fetch_data_raw(symbol: str, interval: str) -> pd.DataFrame:
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
+
 
 def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
     """Vectorized pattern detection - much faster than iterrows."""
