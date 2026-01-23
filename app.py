@@ -16,6 +16,8 @@ st.set_page_config(layout="wide", page_title="Crypto Pattern Watcher", page_icon
 # --- Session State Initialization ---
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = ['BTC-USD', 'ETH-USD', 'SOL-USD']
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = 'yahoo'  # Default to Yahoo Finance
 
 # --- Coinalyze API Helper Functions ---
 def get_coinalyze_api_key() -> str:
@@ -478,15 +480,10 @@ PATTERN_RANKINGS = {
 }
 
 # --- Optimized Functions ---
+
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch OHLCV data - CryptoCompare primary, yfinance fallback."""
-    # Try CryptoCompare first (primary)
-    df = fetch_data_cryptocompare(symbol, interval)
-    if not df.empty:
-        return df
-    
-    # Fallback to yfinance if CryptoCompare fails
+def fetch_data_yfinance(symbol: str, interval: str) -> pd.DataFrame:
+    """Fetch OHLCV data from Yahoo Finance (yfinance)."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
         df = yf.download(ticker, period="max", interval=interval, progress=False)
@@ -506,15 +503,8 @@ def fetch_data(symbol: str, interval: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-
-def fetch_data_raw(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch data WITHOUT cache - CryptoCompare primary, yfinance fallback."""
-    # Try CryptoCompare first (primary)
-    df = fetch_data_cryptocompare_raw(symbol, interval)
-    if not df.empty:
-        return df
-    
-    # Fallback to yfinance if CryptoCompare fails
+def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
+    """Fetch from yfinance WITHOUT cache - for parallel threads."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
         df = yf.download(ticker, period="max", interval=interval, progress=False)
@@ -533,6 +523,38 @@ def fetch_data_raw(symbol: str, interval: str) -> pd.DataFrame:
         return df
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_data(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
+    """Fetch OHLCV data based on selected data source."""
+    if data_source == 'cryptocompare':
+        # Try CryptoCompare first, fallback to yfinance
+        df = fetch_data_cryptocompare(symbol, interval)
+        if not df.empty:
+            return df
+        return fetch_data_yfinance(symbol, interval)
+    else:
+        # Yahoo Finance (default), fallback to CryptoCompare
+        df = fetch_data_yfinance(symbol, interval)
+        if not df.empty:
+            return df
+        return fetch_data_cryptocompare(symbol, interval)
+
+
+def fetch_data_raw(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
+    """Fetch data WITHOUT cache based on selected data source."""
+    if data_source == 'cryptocompare':
+        # Try CryptoCompare first, fallback to yfinance
+        df = fetch_data_cryptocompare_raw(symbol, interval)
+        if not df.empty:
+            return df
+        return fetch_data_yfinance_raw(symbol, interval)
+    else:
+        # Yahoo Finance (default), fallback to CryptoCompare
+        df = fetch_data_yfinance_raw(symbol, interval)
+        if not df.empty:
+            return df
+        return fetch_data_cryptocompare_raw(symbol, interval)
 
 
 def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
@@ -843,10 +865,10 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
         'pivot': pivot
     }
 
-def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int) -> dict:
+def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data_source: str = 'yahoo') -> dict:
     """Fetch comprehensive investment data for a single symbol."""
     try:
-        df = fetch_data_raw(symbol, interval)
+        df = fetch_data_raw(symbol, interval, data_source)
         if df.empty:
             return {
                 'symbol': symbol, 'status': '❓', 'phase': 'No Data', 
@@ -911,11 +933,11 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int) -> d
             'signal_score': 0, 'levels': {}, 'action': 'ERROR'
         }
 
-def get_watchlist_status_parallel(symbols: list, interval: str = '1wk', lookback: int = 52) -> list:
+def get_watchlist_status_parallel(symbols: list, interval: str = '1wk', lookback: int = 52, data_source: str = 'yahoo') -> list:
     """Fetch watchlist status SEQUENTIALLY - yfinance has thread-safety issues with ThreadPoolExecutor."""
     results = []
     for sym in symbols:
-        result = fetch_symbol_status_enhanced(sym, interval, lookback)
+        result = fetch_symbol_status_enhanced(sym, interval, lookback, data_source)
         results.append(result)
     return results
 
@@ -1056,6 +1078,35 @@ st.caption("Long-term A/D Analysis | Multi-Asset Watchlist | Entry Signals | Sim
 with st.sidebar:
     st.header("⚙️ Settings")
     
+    # Data Source Toggle
+    st.subheader("📡 Data Source")
+    data_source_options = ['yahoo', 'cryptocompare']
+    data_source_labels = {'yahoo': 'Yahoo Finance', 'cryptocompare': 'CryptoCompare'}
+    
+    # Create toggle with Yahoo Finance on left (index 0) as default
+    col_left, col_right = st.columns(2)
+    with col_left:
+        yahoo_selected = st.session_state.data_source == 'yahoo'
+        if st.button(
+            "📊 Yahoo Finance" if yahoo_selected else "Yahoo Finance",
+            use_container_width=True,
+            type="primary" if yahoo_selected else "secondary"
+        ):
+            st.session_state.data_source = 'yahoo'
+            st.rerun()
+    with col_right:
+        crypto_selected = st.session_state.data_source == 'cryptocompare'
+        if st.button(
+            "🔷 CryptoCompare" if crypto_selected else "CryptoCompare",
+            use_container_width=True,
+            type="primary" if crypto_selected else "secondary"
+        ):
+            st.session_state.data_source = 'cryptocompare'
+            st.rerun()
+    
+    st.caption(f"Current: **{data_source_labels[st.session_state.data_source]}**")
+    st.divider()
+    
     analysis_mode = st.radio(
         "Analysis Mode",
         ["📊 Single Asset", "📋 Watchlist Dashboard", "🔄 Timeframe Compare", "📈 Open Interest Monitor"],
@@ -1132,7 +1183,7 @@ with st.sidebar:
 # Single Asset
 if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_btn:
     with st.spinner(f"Analyzing {symbol}..."):
-        df = fetch_data(symbol, interval)
+        df = fetch_data(symbol, interval, st.session_state.data_source)
     
     if not df.empty:
         df = detect_patterns_optimized(df)
@@ -1259,7 +1310,7 @@ elif analysis_mode == "📋 Watchlist Dashboard":
         st.info("Watchlist empty. Add symbols via sidebar.")
     elif 'refresh_btn' in dir() and refresh_btn:
         with st.spinner("Fetching comprehensive data..."):
-            data = get_watchlist_status_parallel(st.session_state.watchlist)
+            data = get_watchlist_status_parallel(st.session_state.watchlist, '1wk', 52, st.session_state.data_source)
         
         # --- OPPORTUNITY HIGHLIGHT CARDS ---
         st.markdown("### 🎯 Quick Insights")
@@ -1452,8 +1503,8 @@ elif analysis_mode == "🔄 Timeframe Compare":
     
     if 'compare_btn' in dir() and compare_btn:
         with st.spinner("Analyzing daily and weekly timeframes..."):
-            df_d = fetch_data(symbol, '1d')
-            df_w = fetch_data(symbol, '1wk')
+            df_d = fetch_data(symbol, '1d', st.session_state.data_source)
+            df_w = fetch_data(symbol, '1wk', st.session_state.data_source)
         
         if not df_d.empty and not df_w.empty:
             # Calculate alignment score
