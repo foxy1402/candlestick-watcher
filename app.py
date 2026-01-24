@@ -1242,7 +1242,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
                 x=strong_buys['timestamp'], y=strong_buys['low'] * 0.97,
                 mode='markers', name='Strong Buy',
                 marker=dict(color='lime', size=12, symbol='star'),
-                hovertemplate='STRONG BUY<extra></extra>'
+                hoverinfo='skip'  # Don't block hover on candlesticks
             ))
         
         if not strong_sells.empty:
@@ -1250,7 +1250,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
                 x=strong_sells['timestamp'], y=strong_sells['high'] * 1.03,
                 mode='markers', name='Strong Sell',
                 marker=dict(color='red', size=12, symbol='star'),
-                hovertemplate='STRONG SELL<extra></extra>'
+                hoverinfo='skip'  # Don't block hover on candlesticks
             ))
         
         fig.update_layout(height=450, xaxis_rangeslider_visible=False, template='plotly_dark', dragmode='pan')
