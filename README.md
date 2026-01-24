@@ -67,10 +67,18 @@ Select a coin and analyze derivatives data:
 ## 🛠️ Tech Stack
 
 - **Frontend**: Streamlit
-- **Data**: Yahoo Finance (`yfinance`)
+- **Data Sources**:
+  - **Yahoo Finance** (`yfinance`) - Default, native daily + weekly support
+  - **CryptoCompare** API - Alternative source, best for daily timeframe
 - **Derivatives**: Coinalyze API
 - **Analysis**: TA-Lib (Technical Analysis Library)
 - **Charts**: Plotly
+
+### Data Source Toggle
+
+The app includes a toggle to switch between Yahoo Finance and CryptoCompare:
+- **Yahoo Finance (Default)**: Recommended for weekly timeframe analysis as it provides native weekly candlestick data
+- **CryptoCompare**: Great for daily timeframe, but weekly data is simulated by aggregating daily candles (less accurate for weekly analysis)
 
 ## 📦 Installation (Local)
 

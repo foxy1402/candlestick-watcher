@@ -1105,6 +1105,11 @@ with st.sidebar:
             st.rerun()
     
     st.caption(f"Current: **{data_source_labels[st.session_state.data_source]}**")
+    
+    # Data source recommendation note
+    if st.session_state.data_source == 'cryptocompare':
+        st.caption("⚠️ *For Weekly timeframe, Yahoo Finance is recommended (native weekly data)*")
+    
     st.divider()
     
     analysis_mode = st.radio(
