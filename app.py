@@ -298,61 +298,89 @@ def fetch_long_short_ratio(symbol: str) -> dict:
         return {'ratio': 1.0, 'long_pct': 50, 'short_pct': 50, 'error': str(e)}
 
 
-def analyze_oi_advisory(oi_change_pct: float, price_change_pct: float) -> dict:
+def analyze_oi_advisory(oi_change_pct: float, price_change_pct: float, 
+                       oi_history: pd.DataFrame = None) -> dict:
     """
     Generate investment advisory based on OI + Price divergence.
-    Thresholds lowered to 0.5% for better sensitivity in typical market conditions.
+    Uses statistical thresholds to avoid noise.
+    
+    Args:
+        oi_change_pct: % change in open interest
+        price_change_pct: % change in price
+        oi_history: Historical OI data for calculating volatility-adjusted thresholds
     """
-    # Lowered thresholds for more responsive signals
-    if oi_change_pct > 0.5 and price_change_pct > 0.5:
+    
+    # Calculate dynamic thresholds based on historical volatility if available
+    if oi_history is not None and len(oi_history) > 20:
+        oi_volatility = oi_history['sumOpenInterest'].pct_change().std()
+        # Threshold = 1 standard deviation
+        oi_threshold = max(1.0, oi_volatility * 100)  # At least 1%
+    else:
+        oi_threshold = 2.0  # Default 2% (more conservative than 0.5%)
+    
+    price_threshold = 1.5  # Price threshold (crypto is volatile)
+    
+    # Strong signals require both metrics above threshold
+    if oi_change_pct > oi_threshold and price_change_pct > price_threshold:
         return {
             'signal': 'BULLISH',
             'emoji': '🟢',
-            'label': 'STRONG TREND',
-            'description': 'New money entering + Price rising = Healthy uptrend.',
+            'label': 'STRONG UPTREND',
+            'description': f'OI +{oi_change_pct:.1f}% and Price +{price_change_pct:.1f}% = New money entering',
             'advisory': '✅ Favorable for holding or adding positions',
             'color': 'green',
-            'score': 80
+            'score': 85,
+            'confidence': 'HIGH'
         }
-    elif oi_change_pct > 0.5 and price_change_pct < -0.5:
+    
+    elif oi_change_pct > oi_threshold and price_change_pct < -price_threshold:
         return {
             'signal': 'BEARISH',
             'emoji': '🔴',
-            'label': 'SHORT PRESSURE',
-            'description': 'OI rising while price falls = Short sellers entering.',
-            'advisory': '⚠️ Caution - Potential further downside',
+            'label': 'SHORT BUILDUP',
+            'description': f'OI +{oi_change_pct:.1f}% while Price -{abs(price_change_pct):.1f}% = Shorts entering',
+            'advisory': '⚠️ Caution - High risk of further downside',
             'color': 'red',
-            'score': 25
+            'score': 20,
+            'confidence': 'HIGH'
         }
-    elif oi_change_pct < -0.5 and price_change_pct > 0.5:
+    
+    elif oi_change_pct < -oi_threshold and price_change_pct > price_threshold:
         return {
             'signal': 'WEAK_RALLY',
             'emoji': '🟡',
-            'label': 'WEAK RALLY',
-            'description': 'OI falling while price rises = Short covering rally.',
-            'advisory': '⏳ Rally may be temporary - Wait for confirmation',
+            'label': 'SHORT SQUEEZE',
+            'description': f'OI -{abs(oi_change_pct):.1f}% while Price +{price_change_pct:.1f}% = Short covering',
+            'advisory': '⏳ Rally may be temporary - Wait for OI confirmation',
             'color': 'yellow',
-            'score': 50
+            'score': 50,
+            'confidence': 'MEDIUM'
         }
-    elif oi_change_pct < -0.5 and price_change_pct < -0.5:
+    
+    elif oi_change_pct < -oi_threshold and price_change_pct < -price_threshold:
         return {
             'signal': 'CAPITULATION',
             'emoji': '🟠',
-            'label': 'CAPITULATION',
-            'description': 'OI + Price both falling = Liquidations happening.',
-            'advisory': '👀 Potential bottom - Watch for reversal',
+            'label': 'LIQUIDATION CASCADE',
+            'description': f'OI -{abs(oi_change_pct):.1f}% and Price -{abs(price_change_pct):.1f}% = Mass liquidations',
+            'advisory': '👀 Potential bottom forming - Watch for reversal with OI stabilization',
             'color': 'orange',
-            'score': 40
+            'score': 40,
+            'confidence': 'MEDIUM'
         }
+    
+    # Weak signals (below threshold) = noise
     else:
+        magnitude = 'small' if abs(oi_change_pct) < oi_threshold/2 else 'moderate'
         return {
             'signal': 'NEUTRAL',
             'emoji': '⚪',
-            'label': 'CONSOLIDATION',
-            'description': 'No strong divergence. Market ranging.',
-            'advisory': '⏸️ Wait for clearer signals',
+            'label': 'NO CLEAR SIGNAL',
+            'description': f'Changes too {magnitude} to be significant (OI {oi_change_pct:+.1f}%, Price {price_change_pct:+.1f}%)',
+            'advisory': '⏸️ Wait for clearer signals above threshold',
             'color': 'gray',
-            'score': 50
+            'score': 50,
+            'confidence': 'LOW'
         }
 
 def calculate_derivatives_score(oi_change: float, funding_rate: float, long_short_ratio: float, price_change: float) -> dict:
@@ -436,8 +464,11 @@ def calculate_derivatives_score(oi_change: float, funding_rate: float, long_shor
 
 # --- Helper Functions for Data Safety ---
 def safe_pct_change(current: float, previous: float) -> float:
-    """Calculate percentage change with zero/NaN safety."""
+    """Calculate percentage change with comprehensive safety checks."""
     if previous == 0 or pd.isna(previous) or pd.isna(current) or np.isinf(previous) or np.isinf(current):
+        return 0.0
+    # Additional check for very small denominators to avoid extreme percentages
+    if abs(previous) < 1e-10:
         return 0.0
     return ((current - previous) / previous) * 100
 
@@ -446,6 +477,19 @@ def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> f
     if denominator == 0 or pd.isna(denominator) or pd.isna(numerator):
         return default
     return numerator / denominator
+
+def safe_series_diff(series: pd.Series, lookback: int) -> float:
+    """Safely calculate series difference with lookback."""
+    if len(series) < lookback + 1:
+        return 0.0
+    try:
+        recent = series.iloc[-1]
+        past = series.iloc[-lookback]
+        if pd.isna(recent) or pd.isna(past):
+            return 0.0
+        return recent - past
+    except (IndexError, KeyError):
+        return 0.0
 
 # --- Constants ---
 PATTERN_RANKINGS = {
@@ -526,19 +570,28 @@ def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
-    """Fetch OHLCV data based on selected data source."""
+    """
+    Fetch OHLCV data based on selected data source.
+    Cache key includes data_source automatically.
+    """
+    fetch_start = datetime.now()
+    
     if data_source == 'cryptocompare':
-        # Try CryptoCompare first, fallback to yfinance
         df = fetch_data_cryptocompare(symbol, interval)
-        if not df.empty:
-            return df
-        return fetch_data_yfinance(symbol, interval)
+        if df.empty:
+            st.warning(f"⚠️ CryptoCompare returned no data for {symbol}, trying Yahoo Finance...")
+            df = fetch_data_yfinance(symbol, interval)
+            if not df.empty:
+                st.info(f"✅ Loaded from Yahoo Finance (fallback)")
+        return df
     else:
-        # Yahoo Finance (default), fallback to CryptoCompare
         df = fetch_data_yfinance(symbol, interval)
-        if not df.empty:
-            return df
-        return fetch_data_cryptocompare(symbol, interval)
+        if df.empty:
+            st.warning(f"⚠️ Yahoo Finance returned no data for {symbol}, trying CryptoCompare...")
+            df = fetch_data_cryptocompare(symbol, interval)
+            if not df.empty:
+                st.info(f"✅ Loaded from CryptoCompare (fallback)")
+        return df
 
 
 def fetch_data_raw(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
@@ -629,10 +682,22 @@ def analyze_ad_phase_fast(df: pd.DataFrame, lookback: int = 20) -> tuple:
             return "downtrend", "red", df
     return "neutral", "gray", df
 
-def detect_wyckoff_fast(df: pd.DataFrame, lookback: int = 52) -> dict:
-    """Simplified Wyckoff detection - optimized."""
+def detect_wyckoff_enhanced(df: pd.DataFrame, lookback: int = 52) -> dict:
+    """
+    Enhanced Wyckoff detection with statistical thresholds and volume confirmation.
+    
+    Returns:
+        dict with phase, emoji, label, description, color, and confidence
+    """
     if len(df) < lookback:
-        return {"phase": "Insufficient Data", "emoji": "⚪", "label": "N/A", "description": "Need more data", "color": "gray"}
+        return {
+            "phase": "Insufficient Data", 
+            "emoji": "⚪", 
+            "label": "N/A", 
+            "description": "Need more data", 
+            "color": "gray",
+            "confidence": "NONE"
+        }
     
     recent = df.tail(lookback)
     current_price = recent['close'].iloc[-1]
@@ -641,26 +706,98 @@ def detect_wyckoff_fast(df: pd.DataFrame, lookback: int = 52) -> dict:
     price_range = price_high - price_low
     
     if price_range == 0:
-        return {"phase": "Ranging", "emoji": "↔️", "label": "SIDEWAYS", "description": "Market consolidating", "color": "gray"}
+        return {
+            "phase": "Ranging", 
+            "emoji": "↔️", 
+            "label": "SIDEWAYS", 
+            "description": "Market consolidating", 
+            "color": "gray",
+            "confidence": "MEDIUM"
+        }
     
-    price_position = (current_price - price_low) / price_range
+    # Use quartiles instead of arbitrary 0.3/0.7
+    q1 = recent['close'].quantile(0.25)
+    q3 = recent['close'].quantile(0.75)
+    
+    price_in_lower_quartile = current_price <= q1
+    price_in_upper_quartile = current_price >= q3
+    
+    # A/D trend
     ad_trend = recent['ad'].iloc[-1] - recent['ad'].iloc[0] if 'ad' in recent.columns else 0
     price_trend = recent['close'].iloc[-1] - recent['close'].iloc[0]
     
-    if price_position < 0.3 and ad_trend > 0:
-        return {"phase": "Accumulation", "emoji": "🛒", "label": "SMART MONEY BUYING",
-                "description": "Big players quietly accumulating", "color": "green"}
-    elif price_position > 0.7 and ad_trend < 0:
-        return {"phase": "Distribution", "emoji": "💸", "label": "SMART MONEY SELLING",
-                "description": "Big players quietly selling", "color": "red"}
+    # Volume confirmation
+    volume_avg = recent['volume'].mean()
+    recent_volume = recent['volume'].tail(10).mean()
+    volume_increasing = recent_volume > volume_avg * 1.1
+    
+    # Price volatility (for confidence)
+    volatility = recent['close'].std() / recent['close'].mean()
+    
+    # Calculate confidence based on data quality
+    confidence = "HIGH"
+    if volatility > 0.15:  # High volatility
+        confidence = "MEDIUM"
+    if len(recent) < lookback * 0.8:  # Missing data
+        confidence = "LOW"
+    
+    # Accumulation: Low price, A/D rising, volume confirmation
+    if price_in_lower_quartile and ad_trend > 0:
+        strength = "STRONG" if volume_increasing else "MODERATE"
+        return {
+            "phase": "Accumulation",
+            "emoji": "🛒",
+            "label": f"{strength} ACCUMULATION",
+            "description": "Smart money accumulating at lower prices" + 
+                          (" with volume confirmation" if volume_increasing else ""),
+            "color": "green",
+            "confidence": confidence
+        }
+    
+    # Distribution: High price, A/D falling, volume confirmation
+    elif price_in_upper_quartile and ad_trend < 0:
+        strength = "STRONG" if volume_increasing else "MODERATE"
+        return {
+            "phase": "Distribution",
+            "emoji": "💸",
+            "label": f"{strength} DISTRIBUTION",
+            "description": "Smart money distributing at higher prices" +
+                          (" with volume confirmation" if volume_increasing else ""),
+            "color": "red",
+            "confidence": confidence
+        }
+    
+    # Markup: A/D and price both rising
     elif ad_trend > 0 and price_trend > 0:
-        return {"phase": "Markup", "emoji": "📈", "label": "TRENDING UP",
-                "description": "Healthy uptrend with volume", "color": "green"}
+        return {
+            "phase": "Markup",
+            "emoji": "📈",
+            "label": "UPTREND",
+            "description": "Healthy uptrend with accumulation continuing",
+            "color": "green",
+            "confidence": confidence
+        }
+    
+    # Markdown: A/D and price both falling
     elif ad_trend < 0 and price_trend < 0:
-        return {"phase": "Markdown", "emoji": "📉", "label": "TRENDING DOWN",
-                "description": "Downtrend confirmed", "color": "red"}
-    return {"phase": "Ranging", "emoji": "↔️", "label": "SIDEWAYS",
-            "description": "Market consolidating", "color": "gray"}
+        return {
+            "phase": "Markdown",
+            "emoji": "📉",
+            "label": "DOWNTREND",
+            "description": "Distribution continuing, downtrend confirmed",
+            "color": "red",
+            "confidence": confidence
+        }
+    
+    # Default: Ranging
+    return {
+        "phase": "Ranging",
+        "emoji": "↔️",
+        "label": "CONSOLIDATION",
+        "description": "Market consolidating, wait for clear direction",
+        "color": "gray",
+        "confidence": confidence
+    }
 
 def generate_signals_fast(df: pd.DataFrame) -> pd.DataFrame:
     """Vectorized signal generation."""
@@ -715,12 +852,31 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
     
     return zones  # Return all zones
 
-def calculate_performance_metrics(df: pd.DataFrame) -> dict:
-    """Calculate multi-period performance returns using date-based lookback."""
-    if df.empty or len(df) < 2:
-        return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0, 'data_age_days': 999}
+def find_closest_price(df: pd.DataFrame, target_date: pd.Timestamp, current_price: float) -> tuple:
+    """Find price closest to target date, return (price, actual_days_diff)."""
+    if df.empty:
+        return current_price, 0
     
-    # Ensure timestamp is datetime first
+    # Calculate absolute time difference
+    df_copy = df.copy()
+    df_copy['time_diff'] = abs(df_copy['timestamp'] - target_date)
+    
+    # Find row with minimum time difference
+    closest_idx = df_copy['time_diff'].idxmin()
+    closest_price = df_copy.loc[closest_idx, 'close']
+    actual_date = df_copy.loc[closest_idx, 'timestamp']
+    
+    # Calculate actual days difference for validation
+    actual_days = abs((actual_date - target_date).days)
+    
+    return closest_price, actual_days
+
+def calculate_performance_metrics(df: pd.DataFrame) -> dict:
+    """Calculate multi-period performance returns using closest timestamp matching."""
+    if df.empty or len(df) < 2:
+        return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0, 'data_age_days': 999, 
+                'warnings': ['Insufficient data']}
+    
     if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
         df = df.copy()
         df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -728,38 +884,38 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     current_price = df['close'].iloc[-1]
     current_date = pd.to_datetime(df['timestamp'].iloc[-1])
     
-    # Calculate data age (how old is the latest data point)
+    # Calculate data age
     try:
-        data_age_days = (pd.Timestamp.now(tz=None) - current_date.tz_localize(None) if current_date.tzinfo else pd.Timestamp.now() - current_date).days
+        now = pd.Timestamp.now(tz=None)
+        data_date = current_date.tz_localize(None) if current_date.tzinfo else current_date
+        data_age_days = (now - data_date).days
     except:
         data_age_days = 0
     
-    # 7D return (find price ~7 days ago)
+    warnings = []
+    if data_age_days > 1:
+        warnings.append(f'Data is {data_age_days} days old')
+    
+    # 7D return with closest matching
     target_7d = current_date - pd.Timedelta(days=7)
-    df_7d = df[df['timestamp'] <= target_7d]
-    if not df_7d.empty:
-        price_7d = df_7d['close'].iloc[-1]
-        ret_7d = safe_pct_change(current_price, price_7d)
-    else:
-        ret_7d = 0
+    price_7d, days_diff_7d = find_closest_price(df, target_7d, current_price)
+    if days_diff_7d > 2:  # More than 2 days off target
+        warnings.append(f'7D return based on {7 + days_diff_7d}D ago (data gaps)')
+    ret_7d = safe_pct_change(current_price, price_7d)
     
     # 30D return
     target_30d = current_date - pd.Timedelta(days=30)
-    df_30d = df[df['timestamp'] <= target_30d]
-    if not df_30d.empty:
-        price_30d = df_30d['close'].iloc[-1]
-        ret_30d = safe_pct_change(current_price, price_30d)
-    else:
-        ret_30d = 0
+    price_30d, days_diff_30d = find_closest_price(df, target_30d, current_price)
+    if days_diff_30d > 5:
+        warnings.append(f'30D return based on {30 + days_diff_30d}D ago (data gaps)')
+    ret_30d = safe_pct_change(current_price, price_30d)
     
     # 90D return
     target_90d = current_date - pd.Timedelta(days=90)
-    df_90d = df[df['timestamp'] <= target_90d]
-    if not df_90d.empty:
-        price_90d = df_90d['close'].iloc[-1]
-        ret_90d = safe_pct_change(current_price, price_90d)
-    else:
-        ret_90d = 0
+    price_90d, days_diff_90d = find_closest_price(df, target_90d, current_price)
+    if days_diff_90d > 10:
+        warnings.append(f'90D return based on {90 + days_diff_90d}D ago (data gaps)')
+    ret_90d = safe_pct_change(current_price, price_90d)
     
     # YTD return
     current_year = current_date.year
@@ -769,8 +925,16 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
         ret_ytd = safe_pct_change(current_price, price_ytd_start)
     else:
         ret_ytd = 0
+        warnings.append('Insufficient data for YTD calculation')
     
-    return {'7d': ret_7d, '30d': ret_30d, '90d': ret_90d, 'ytd': ret_ytd, 'data_age_days': data_age_days}
+    return {
+        '7d': ret_7d, 
+        '30d': ret_30d, 
+        '90d': ret_90d, 
+        'ytd': ret_ytd, 
+        'data_age_days': data_age_days,
+        'warnings': warnings
+    }
 
 def calculate_signal_strength(phase: str, wyckoff: dict, df: pd.DataFrame, lookback: int = 52) -> tuple:
     """
@@ -878,7 +1042,7 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data
             }
         
         phase, _, df = analyze_ad_phase_fast(df, lookback)
-        wyckoff = detect_wyckoff_fast(df, lookback)
+        wyckoff = detect_wyckoff_enhanced(df, lookback)
         
         last_price = df.iloc[-1]['close']
         prev_price = df.iloc[-2]['close'] if len(df) > 1 else last_price
@@ -990,17 +1154,10 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
     score += trend_align // 2
     factors['trend_alignment'] = trend_align
     
-    # A/D momentum (30 points) - with proper bounds checking
+    # A/D momentum (30 points) - with proper bounds checking using safe_series_diff
     if 'ad' in df_daily.columns and 'ad' in df_weekly.columns:
-        if len(df_daily) >= 20:
-            ad_daily = df_daily['ad'].iloc[-1] - df_daily['ad'].iloc[-20]
-        else:
-            ad_daily = 0
-        
-        if len(df_weekly) >= 10:
-            ad_weekly = df_weekly['ad'].iloc[-1] - df_weekly['ad'].iloc[-10]
-        else:
-            ad_weekly = 0
+        ad_daily = safe_series_diff(df_daily['ad'], 20)
+        ad_weekly = safe_series_diff(df_weekly['ad'], 10)
         
         if ad_daily > 0 and ad_weekly > 0:
             ad_align = 30
@@ -1070,8 +1227,75 @@ def calculate_trend_strength_adx(df: pd.DataFrame, period: int = 14) -> dict:
     except:
         return {'adx': 0, 'strength': 'ERROR', 'direction': 'neutral'}
 
+# --- Validation and Warning Functions ---
+def validate_symbol(symbol: str) -> tuple:
+    """
+    Validate symbol format.
+    Returns: (is_valid: bool, cleaned_symbol: str, message: str)
+    """
+    if not symbol:
+        return False, "", "Symbol cannot be empty"
+    
+    # Remove whitespace
+    symbol = symbol.strip().upper()
+    
+    # Check length
+    if len(symbol) < 3 or len(symbol) > 20:
+        return False, symbol, "Symbol must be 3-20 characters"
+    
+    # Check format
+    if '-' in symbol:
+        parts = symbol.split('-')
+        if len(parts) != 2:
+            return False, symbol, "Use format: BTC-USD"
+        if not parts[0].isalpha() or not parts[1].isalpha():
+            return False, symbol, "Symbol parts must be letters only"
+    else:
+        if not symbol.replace('USDT', '').replace('USD', '').isalpha():
+            return False, symbol, "Invalid symbol format"
+    
+    return True, symbol, ""
+
+def show_data_freshness_warning(data_age_days: int, warnings: list = None):
+    """Display prominent warning if data is stale."""
+    if data_age_days > 2:
+        st.error(f"""
+        ⚠️ **DATA FRESHNESS ALERT**
+        
+        Latest data is **{data_age_days} days old**
+        
+        Investment signals may not reflect current market conditions.
+        """)
+    elif data_age_days > 0:
+        st.warning(f"ℹ️ Data is {data_age_days} day(s) old")
+    
+    if warnings:
+        with st.expander("⚠️ Data Quality Warnings"):
+            for warning in warnings:
+                st.warning(warning)
+
 # --- UI ---
 st.title("🕯️ Crypto Pattern Watcher")
+
+# PROMINENT DISCLAIMER
+st.error("""
+⚠️ **INVESTMENT DISCLAIMER - READ CAREFULLY**
+
+This tool is for **EDUCATIONAL PURPOSES ONLY**. It is NOT financial advice.
+
+**Important:**
+- All signals are based on technical indicators that have NOT been validated for profitability
+- Past performance does NOT guarantee future results
+- Cryptocurrency is EXTREMELY volatile and risky
+- You can lose ALL your invested capital
+- Only invest what you can afford to lose completely
+- Consult a licensed financial advisor before making investment decisions
+
+**The developers assume NO responsibility for financial losses.**
+
+By using this tool, you acknowledge these risks.
+""")
+
 st.caption("Long-term A/D Analysis | Multi-Asset Watchlist | Entry Signals | Simplified Wyckoff")
 
 # Sidebar
@@ -1106,6 +1330,15 @@ with st.sidebar:
     
     st.caption(f"Current: **{data_source_labels[st.session_state.data_source]}**")
     
+    # Manual cache clearing on data source change
+    if 'previous_data_source' not in st.session_state:
+        st.session_state.previous_data_source = st.session_state.data_source
+    
+    if st.session_state.data_source != st.session_state.previous_data_source:
+        st.cache_data.clear()
+        st.session_state.previous_data_source = st.session_state.data_source
+        st.info("🔄 Cache cleared due to data source change")
+    
     # Data source recommendation note
     if st.session_state.data_source == 'cryptocompare':
         st.caption("⚠️ *For Weekly timeframe, Yahoo Finance is recommended (native weekly data)*")
@@ -1121,14 +1354,19 @@ with st.sidebar:
     st.divider()
     
     if analysis_mode == "📊 Single Asset":
-        symbol = st.text_input("Symbol", value="BTC-USD").upper()
+        symbol_input = st.text_input("Symbol", value="BTC-USD")
+        is_valid, symbol, msg = validate_symbol(symbol_input)
+        if not is_valid and symbol_input:
+            st.error(f"❌ {msg}")
+        symbol = symbol if is_valid else symbol_input.upper()
+        
         interval = st.selectbox("Timeframe", ["1d", "1wk"], format_func=lambda x: "Daily" if x == "1d" else "Weekly")
         
         lookback_presets = {"Short (10)": 10, "Mid (26)": 26, "Long (52)": 52}
         lookback_selection = st.selectbox("Lookback", options=list(lookback_presets.keys()), index=2)
         lookback_period = lookback_presets[lookback_selection]
         
-        analyze_btn = st.button("🚀 Analyze", use_container_width=True, type="primary")
+        analyze_btn = st.button("🚀 Analyze", use_container_width=True, type="primary", disabled=not is_valid)
     
     elif analysis_mode == "📋 Watchlist Dashboard":
         st.subheader("Manage Watchlist")
@@ -1187,14 +1425,51 @@ with st.sidebar:
 
 # Single Asset
 if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_btn:
-    with st.spinner(f"Analyzing {symbol}..."):
-        df = fetch_data(symbol, interval, st.session_state.data_source)
-    
-    if not df.empty:
+    try:
+        with st.spinner(f"Analyzing {symbol}..."):
+            df = fetch_data(symbol, interval, st.session_state.data_source)
+        
+        if df.empty:
+            st.error(f"""
+            ❌ No data available for {symbol}
+            
+            Possible reasons:
+            - Symbol not found
+            - Data source issues
+            - Network connectivity
+            
+            Try:
+            - Checking symbol format (BTC-USD)
+            - Switching data sources
+            - Trying a different symbol
+            """)
+            st.stop()
+        
+        # Validation
+        required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            st.error(f"❌ Data missing required columns: {missing_cols}")
+            st.stop()
+        
+        if len(df) < lookback_period:
+            st.warning(f"""
+            ⚠️ Insufficient data for {lookback_period} period analysis
+            
+            Available: {len(df)} periods
+            Required: {lookback_period} periods
+            
+            Results may be less reliable.
+            """)
+        
+        # Calculate performance metrics first to check data freshness
+        perf = calculate_performance_metrics(df)
+        show_data_freshness_warning(perf['data_age_days'], perf.get('warnings'))
+        
         df = detect_patterns_optimized(df)
         phase, color, df = analyze_ad_phase_fast(df, lookback=lookback_period)
         df = generate_signals_fast(df)
-        wyckoff = detect_wyckoff_fast(df, lookback_period)
+        wyckoff = detect_wyckoff_enhanced(df, lookback_period)
         zones = get_phase_zones_fast(df)
         
         # Metrics
@@ -1304,8 +1579,21 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             ), use_container_width=True, hide_index=True)
         else:
             st.info("No signals in visible range")
-    else:
-        st.error(f"Could not load {symbol}")
+    
+    except Exception as e:
+        st.error(f"""
+        ❌ Analysis failed
+        
+        Error: {str(e)}
+        
+        Please try:
+        - Refreshing the page
+        - Selecting a different symbol
+        - Changing data source
+        - Reporting this issue if it persists
+        """)
+        with st.expander("🔍 Technical Details"):
+            st.exception(e)
 
 # Watchlist
 elif analysis_mode == "📋 Watchlist Dashboard":
@@ -1518,8 +1806,8 @@ elif analysis_mode == "🔄 Timeframe Compare":
             # Re-analyze for display (since mtf_alignment modifies dfs)
             phase_d, _, df_d = analyze_ad_phase_fast(df_d, 26)
             phase_w, _, df_w = analyze_ad_phase_fast(df_w, 52)
-            wyck_d = detect_wyckoff_fast(df_d, 26)
-            wyck_w = detect_wyckoff_fast(df_w, 52)
+            wyck_d = detect_wyckoff_enhanced(df_d, 26)
+            wyck_w = detect_wyckoff_enhanced(df_w, 52)
             
             # Trend strength
             trend_d = calculate_trend_strength_adx(df_d)
