@@ -1162,7 +1162,7 @@ with st.sidebar:
         yahoo_selected = st.session_state.data_source == 'yahoo'
         if st.button(
             "📊 Yahoo Finance" if yahoo_selected else "Yahoo Finance",
-            use_container_width=True,
+            width='stretch',
             type="primary" if yahoo_selected else "secondary"
         ):
             st.session_state.data_source = 'yahoo'
@@ -1171,7 +1171,7 @@ with st.sidebar:
         crypto_selected = st.session_state.data_source == 'cryptocompare'
         if st.button(
             "🔷 CryptoCompare" if crypto_selected else "CryptoCompare",
-            use_container_width=True,
+            width='stretch',
             type="primary" if crypto_selected else "secondary"
         ):
             st.session_state.data_source = 'cryptocompare'
@@ -1215,14 +1215,14 @@ with st.sidebar:
         lookback_selection = st.selectbox("Lookback", options=list(lookback_presets.keys()), index=2)
         lookback_period = lookback_presets[lookback_selection]
         
-        analyze_btn = st.button("🚀 Analyze", use_container_width=True, type="primary", disabled=not is_valid)
+        analyze_btn = st.button("🚀 Analyze", width='stretch', type="primary", disabled=not is_valid)
     
     elif analysis_mode == "📋 Watchlist Dashboard":
         st.subheader("Manage Watchlist")
         new_symbol = st.text_input("Add Symbol", placeholder="e.g., AVAX-USD")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("➕ Add", use_container_width=True):
+            if st.button("➕ Add", width='stretch'):
                 if new_symbol:
                     is_valid_add, cleaned_add, msg_add = validate_symbol(new_symbol)
                     if not is_valid_add:
@@ -1233,7 +1233,7 @@ with st.sidebar:
                         st.session_state.watchlist.append(cleaned_add)
                         st.rerun()
         with col2:
-            if st.button("🗑️ Clear", use_container_width=True):
+            if st.button("🗑️ Clear", width='stretch'):
                 st.session_state.watchlist = []
                 st.rerun()
         
@@ -1245,11 +1245,11 @@ with st.sidebar:
                 st.session_state.watchlist.remove(sym)
                 st.rerun()
         
-        refresh_btn = st.button("🔄 Refresh", use_container_width=True, type="primary")
+        refresh_btn = st.button("🔄 Refresh", width='stretch', type="primary")
     
     elif analysis_mode == "🔄 Timeframe Compare":
         symbol = st.text_input("Symbol", value="BTC-USD").upper()
-        compare_btn = st.button("🔄 Compare", use_container_width=True, type="primary")
+        compare_btn = st.button("🔄 Compare", width='stretch', type="primary")
     
     elif analysis_mode == "📈 Open Interest Monitor":
         symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
@@ -1274,7 +1274,7 @@ with st.sidebar:
         else:
             st.error("❌ COINALYZE_API_KEY not set")
         
-        oi_analyze_btn = st.button("📈 Analyze OI", use_container_width=True, type="primary")
+        oi_analyze_btn = st.button("📈 Analyze OI", width='stretch', type="primary")
 
 # --- Main Content ---
 
@@ -1384,7 +1384,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             ))
         
         fig.update_layout(height=450, xaxis_rangeslider_visible=False, template='plotly_dark', dragmode='pan')
-        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+        st.plotly_chart(fig, width='stretch', config={'scrollZoom': True})
         
         # A/D Chart
         st.subheader("💰 Money Flow (A/D Line)")
@@ -1414,7 +1414,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', 
                                     line=dict(color='yellow', dash='dot', width=1)))
         ad_fig.update_layout(height=250, template='plotly_dark')
-        st.plotly_chart(ad_fig, use_container_width=True, config={'scrollZoom': True})
+        st.plotly_chart(ad_fig, width='stretch', config={'scrollZoom': True})
         
         with st.expander("📖 How to Read"):
             st.markdown("""
@@ -1431,7 +1431,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         if not signals.empty:
             st.dataframe(signals[['timestamp', 'close', 'candlestick_pattern', 'phase', 'signal_strength']].rename(
                 columns={'timestamp': 'Date', 'close': 'Price', 'candlestick_pattern': 'Pattern', 'phase': 'Phase', 'signal_strength': 'Signal'}
-            ), use_container_width=True, hide_index=True)
+            ), width='stretch', hide_index=True)
         else:
             st.info("No signals in visible range")
     
@@ -1585,7 +1585,7 @@ elif analysis_mode == "📋 Watchlist Dashboard":
                 'Support': st.column_config.TextColumn('Support', width='small'),
                 'Resistance': st.column_config.TextColumn('Resistance', width='small'),
             },
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         
@@ -1819,7 +1819,7 @@ elif analysis_mode == "🔄 Timeframe Compare":
             
             fig.update_layout(height=700, template='plotly_dark', showlegend=False)
             fig.update_xaxes(rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'scrollZoom': True})
             
             # --- ALIGNMENT FACTORS BREAKDOWN ---
             with st.expander("📖 Alignment Score Breakdown"):
@@ -2126,7 +2126,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 fig.update_yaxes(title_text="Open Interest", secondary_y=False, tickformat=".2s")
                 fig.update_yaxes(title_text="Price (USD)", secondary_y=True, tickprefix="$")
                 
-                st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+                st.plotly_chart(fig, width='stretch', config={'scrollZoom': True})
                 
                 # Signal count summary
                 st.caption(f"📊 Historical Signals: 🟢 {len(bullish_points)} Bullish | 🔴 {len(bearish_points)} Bearish | 🟡 {len(weak_points)} Weak Rally | 🟠 {len(cap_points)} Capitulation")

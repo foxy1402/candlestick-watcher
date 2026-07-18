@@ -119,7 +119,7 @@ publishes it to the GitHub Container Registry via GitHub Actions
 (`.github/workflows/docker-publish.yml`). No registry secrets are required —
 it uses the built-in `GITHUB_TOKEN`.
 
-**Image:** `ghcr.io/<your-github-username>/<repo-name>:latest`
+**Image:** `ghcr.io/foxy1402/candlestick-watcher:latest`
 
 > After the first successful run, open the package on GitHub → **Package settings**
 > and set visibility to **Public** if you want to pull it without authentication.
@@ -137,27 +137,27 @@ it uses the built-in `GITHUB_TOKEN`.
 ```bash
 docker run --rm -p 8501:8501 \
   -e COINALYZE_API_KEY=your-key \
-  ghcr.io/<your-github-username>/<repo-name>:latest
+  ghcr.io/foxy1402/candlestick-watcher:latest
 # open http://localhost:8501
 ```
 
 To run on a different port:
 
 ```bash
-docker run --rm -e PORT=9000 -p 9000:9000 ghcr.io/<your-github-username>/<repo-name>:latest
+docker run --rm -e PORT=9000 -p 9000:9000 ghcr.io/foxy1402/candlestick-watcher:latest
 ```
 
 ### Deploy on Render
 
 1. **New → Web Service → Deploy an existing image from a registry**
-2. Image URL: `ghcr.io/<your-github-username>/<repo-name>:latest`
+2. Image URL: `ghcr.io/foxy1402/candlestick-watcher:latest`
 3. Render sets `PORT` automatically — the app binds to it, no extra config needed.
 4. Add `COINALYZE_API_KEY` under **Environment**.
 
 ### Deploy on Portainer
 
 1. **Stacks / Containers → Add container**
-2. Image: `ghcr.io/<your-github-username>/<repo-name>:latest`
+2. Image: `ghcr.io/foxy1402/candlestick-watcher:latest`
 3. Map a host port to container port `8501` (or set `PORT` and map that port).
 4. Add env vars (`PORT`, `COINALYZE_API_KEY`) under **Env**.
 

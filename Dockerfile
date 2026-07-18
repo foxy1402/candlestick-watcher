@@ -48,4 +48,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD python -c "import os,sys,urllib.request; url='http://127.0.0.1:'+os.environ.get('PORT','8501')+'/_stcore/health'; sys.exit(0 if urllib.request.urlopen(url, timeout=4).status==200 else 1)" || exit 1
 
 # Shell form so ${PORT} is expanded at runtime.
-CMD streamlit run app.py --server.port="${PORT:-8501}" --server.address=0.0.0.0
+CMD streamlit run app.py --server.port="${PORT:-8501}" --server.address=0.0.0.0 --browser.gatherUsageStats=false

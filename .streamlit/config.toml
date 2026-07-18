@@ -1,0 +1,10 @@
+# Baked-in defaults so behavior is consistent across hosts (Render, Portainer, etc.).
+# Note: the listening port is intentionally NOT set here so the $PORT env var
+# (passed via the Docker CMD) stays authoritative for PaaS deployments.
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+address = "0.0.0.0"
