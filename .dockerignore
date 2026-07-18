@@ -1,0 +1,28 @@
+# Git / CI
+.git
+.gitignore
+.github
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv
+venv/
+env/
+ENV/
+
+# Local secrets / config
+.env
+.streamlit/secrets.toml
+
+# Debug / logs
+*.log
+debug-*.log
+
+# Docs (not needed at runtime)
+*.md
+
+# OS
+.DS_Store

@@ -5,7 +5,6 @@ import talib
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from datetime import datetime, timedelta
 import os
@@ -19,71 +18,34 @@ if 'watchlist' not in st.session_state:
 if 'data_source' not in st.session_state:
     st.session_state.data_source = 'yahoo'  # Default to Yahoo Finance
 
+# --- API Key Helpers ---
+def get_secret(name: str) -> str:
+    """Get a secret from Streamlit secrets first, then environment variable."""
+    try:
+        value = st.secrets.get(name, '')
+        if value:
+            return value
+    except Exception:
+        pass
+    return os.environ.get(name, '')
+
 # --- Coinalyze API Helper Functions ---
 def get_coinalyze_api_key() -> str:
-    """Get Coinalyze API key from environment variable."""
-    return os.environ.get('COINALYZE_API_KEY', '')
+    """Get Coinalyze API key from Streamlit secrets or environment variable."""
+    return get_secret('COINALYZE_API_KEY')
 
 # --- CryptoCompare API Helper Functions ---
 def get_cryptocompare_api_key() -> str:
     """Get CryptoCompare API key from Streamlit secrets or environment variable."""
-    try:
-        return st.secrets.get('CRYPTOCOMPARE_API_KEY', '')
-    except:
-        pass
-    return os.environ.get('CRYPTOCOMPARE_API_KEY', '')
+    return get_secret('CRYPTOCOMPARE_API_KEY')
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data_cryptocompare(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch OHLCV data from CryptoCompare API (primary data source)."""
-    try:
-        api_key = get_cryptocompare_api_key()
-        if not api_key:
-            return pd.DataFrame()
-        
-        if '-' in symbol:
-            parts = symbol.split('-')
-            fsym = parts[0].upper()
-            tsym = parts[1].upper() if len(parts) > 1 else 'USD'
-        else:
-            fsym = symbol.replace('USDT', '').replace('USD', '').upper()
-            tsym = 'USD'
-        
-        aggregate = 7 if interval == '1wk' else 1
-        
-        url = "https://min-api.cryptocompare.com/data/histoday"
-        params = {
-            'fsym': fsym,
-            'tsym': tsym,
-            'allData': 'true',
-            'aggregate': aggregate,
-            'api_key': api_key
-        }
-        
-        response = requests.get(url, params=params, timeout=30)
-        data = response.json()
-        
-        if data.get('Response') != 'Success' or 'Data' not in data:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(data['Data'])
-        if df.empty:
-            return pd.DataFrame()
-        
-        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
-        df['volume'] = df['volumeto'].astype(float)
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
-        
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        
-        df = df[(df['open'] > 0) & (df['close'] > 0)]
-        return df
-    except Exception:
-        return pd.DataFrame()
+    """Fetch OHLCV data from CryptoCompare API (primary data source), cached."""
+    return fetch_data_cryptocompare_raw(symbol, interval)
 
 def fetch_data_cryptocompare_raw(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch from CryptoCompare WITHOUT cache - for parallel threads."""
+    """Fetch from CryptoCompare WITHOUT cache."""
     try:
         api_key = get_cryptocompare_api_key()
         if not api_key:
@@ -298,91 +260,6 @@ def fetch_long_short_ratio(symbol: str) -> dict:
         return {'ratio': 1.0, 'long_pct': 50, 'short_pct': 50, 'error': str(e)}
 
 
-def analyze_oi_advisory(oi_change_pct: float, price_change_pct: float, 
-                       oi_history: pd.DataFrame = None) -> dict:
-    """
-    Generate investment advisory based on OI + Price divergence.
-    Uses statistical thresholds to avoid noise.
-    
-    Args:
-        oi_change_pct: % change in open interest
-        price_change_pct: % change in price
-        oi_history: Historical OI data for calculating volatility-adjusted thresholds
-    """
-    
-    # Calculate dynamic thresholds based on historical volatility if available
-    if oi_history is not None and len(oi_history) > 20:
-        oi_volatility = oi_history['sumOpenInterest'].pct_change().std()
-        # Threshold = 1 standard deviation
-        oi_threshold = max(1.0, oi_volatility * 100)  # At least 1%
-    else:
-        oi_threshold = 2.0  # Default 2% (more conservative than 0.5%)
-    
-    price_threshold = 1.5  # Price threshold (crypto is volatile)
-    
-    # Strong signals require both metrics above threshold
-    if oi_change_pct > oi_threshold and price_change_pct > price_threshold:
-        return {
-            'signal': 'BULLISH',
-            'emoji': '🟢',
-            'label': 'STRONG UPTREND',
-            'description': f'OI +{oi_change_pct:.1f}% and Price +{price_change_pct:.1f}% = New money entering',
-            'advisory': '✅ Favorable for holding or adding positions',
-            'color': 'green',
-            'score': 85,
-            'confidence': 'HIGH'
-        }
-    
-    elif oi_change_pct > oi_threshold and price_change_pct < -price_threshold:
-        return {
-            'signal': 'BEARISH',
-            'emoji': '🔴',
-            'label': 'SHORT BUILDUP',
-            'description': f'OI +{oi_change_pct:.1f}% while Price -{abs(price_change_pct):.1f}% = Shorts entering',
-            'advisory': '⚠️ Caution - High risk of further downside',
-            'color': 'red',
-            'score': 20,
-            'confidence': 'HIGH'
-        }
-    
-    elif oi_change_pct < -oi_threshold and price_change_pct > price_threshold:
-        return {
-            'signal': 'WEAK_RALLY',
-            'emoji': '🟡',
-            'label': 'SHORT SQUEEZE',
-            'description': f'OI -{abs(oi_change_pct):.1f}% while Price +{price_change_pct:.1f}% = Short covering',
-            'advisory': '⏳ Rally may be temporary - Wait for OI confirmation',
-            'color': 'yellow',
-            'score': 50,
-            'confidence': 'MEDIUM'
-        }
-    
-    elif oi_change_pct < -oi_threshold and price_change_pct < -price_threshold:
-        return {
-            'signal': 'CAPITULATION',
-            'emoji': '🟠',
-            'label': 'LIQUIDATION CASCADE',
-            'description': f'OI -{abs(oi_change_pct):.1f}% and Price -{abs(price_change_pct):.1f}% = Mass liquidations',
-            'advisory': '👀 Potential bottom forming - Watch for reversal with OI stabilization',
-            'color': 'orange',
-            'score': 40,
-            'confidence': 'MEDIUM'
-        }
-    
-    # Weak signals (below threshold) = noise
-    else:
-        magnitude = 'small' if abs(oi_change_pct) < oi_threshold/2 else 'moderate'
-        return {
-            'signal': 'NEUTRAL',
-            'emoji': '⚪',
-            'label': 'NO CLEAR SIGNAL',
-            'description': f'Changes too {magnitude} to be significant (OI {oi_change_pct:+.1f}%, Price {price_change_pct:+.1f}%)',
-            'advisory': '⏸️ Wait for clearer signals above threshold',
-            'color': 'gray',
-            'score': 50,
-            'confidence': 'LOW'
-        }
-
 def calculate_derivatives_score(oi_change: float, funding_rate: float, long_short_ratio: float, price_change: float) -> dict:
     """
     Calculate comprehensive derivatives-based investment score (0-100).
@@ -527,28 +404,11 @@ PATTERN_RANKINGS = {
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data_yfinance(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch OHLCV data from Yahoo Finance (yfinance)."""
-    try:
-        ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        df = yf.download(ticker, period="max", interval=interval, progress=False)
-        if df.empty:
-            return pd.DataFrame()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.reset_index()
-        df.columns = [c.lower() for c in df.columns]
-        if 'date' in df.columns:
-            df.rename(columns={'date': 'timestamp'}, inplace=True)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        return df
-    except Exception:
-        return pd.DataFrame()
+    """Fetch OHLCV data from Yahoo Finance (yfinance), cached."""
+    return fetch_data_yfinance_raw(symbol, interval)
 
 def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
-    """Fetch from yfinance WITHOUT cache - for parallel threads."""
+    """Fetch from yfinance WITHOUT cache."""
     try:
         ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
         df = yf.download(ticker, period="max", interval=interval, progress=False)
@@ -571,76 +431,55 @@ def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
     """
-    Fetch OHLCV data based on selected data source.
+    Fetch OHLCV data based on selected data source, with fallback to the other source.
     Cache key includes data_source automatically.
+
+    Note: no st.* side effects here so results cache cleanly and behave consistently
+    whether served from cache or freshly computed.
     """
-    fetch_start = datetime.now()
-    
     if data_source == 'cryptocompare':
         df = fetch_data_cryptocompare(symbol, interval)
         if df.empty:
-            st.warning(f"⚠️ CryptoCompare returned no data for {symbol}, trying Yahoo Finance...")
             df = fetch_data_yfinance(symbol, interval)
-            if not df.empty:
-                st.info(f"✅ Loaded from Yahoo Finance (fallback)")
-        return df
     else:
         df = fetch_data_yfinance(symbol, interval)
         if df.empty:
-            st.warning(f"⚠️ Yahoo Finance returned no data for {symbol}, trying CryptoCompare...")
             df = fetch_data_cryptocompare(symbol, interval)
-            if not df.empty:
-                st.info(f"✅ Loaded from CryptoCompare (fallback)")
-        return df
-
-
-def fetch_data_raw(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
-    """Fetch data WITHOUT cache based on selected data source."""
-    if data_source == 'cryptocompare':
-        # Try CryptoCompare first, fallback to yfinance
-        df = fetch_data_cryptocompare_raw(symbol, interval)
-        if not df.empty:
-            return df
-        return fetch_data_yfinance_raw(symbol, interval)
-    else:
-        # Yahoo Finance (default), fallback to CryptoCompare
-        df = fetch_data_yfinance_raw(symbol, interval)
-        if not df.empty:
-            return df
-        return fetch_data_cryptocompare_raw(symbol, interval)
+    return df
 
 
 def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
-    """Vectorized pattern detection - much faster than iterrows."""
+    """Vectorized pattern detection using numpy - picks the highest-ranked pattern per bar."""
     candle_names = talib.get_function_groups()['Pattern Recognition']
     op, hi, lo, cl = df['open'].values, df['high'].values, df['low'].values, df['close'].values
-    
-    # Apply all patterns at once (vectorized)
-    pattern_results = {}
-    for candle in candle_names:
-        pattern_results[candle] = getattr(talib, candle)(op, hi, lo, cl)
-    
-    # Initialize result columns
-    df['candlestick_pattern'] = "NO_PATTERN"
-    df['candlestick_match_count'] = 0
-    df['pattern_direction'] = 'neutral'
-    
-    # Vectorized pattern detection
-    for i in range(len(df)):
-        found = []
-        for candle, values in pattern_results.items():
-            if values[i] != 0:
-                direction = 'Bull' if values[i] > 0 else 'Bear'
-                pattern_key = f"{candle}_{direction}"
-                rank = PATTERN_RANKINGS.get(pattern_key, 999)
-                found.append((pattern_key, rank, values[i]))
-        
-        if found:
-            found.sort(key=lambda x: x[1])
-            df.iloc[i, df.columns.get_loc('candlestick_pattern')] = found[0][0]
-            df.iloc[i, df.columns.get_loc('candlestick_match_count')] = len(found)
-            df.iloc[i, df.columns.get_loc('pattern_direction')] = 'bullish' if found[0][2] > 0 else 'bearish'
-    
+    n = len(df)
+    num_patterns = len(candle_names)
+
+    # Build value + rank matrices (rows x patterns) in one pass
+    vals = np.zeros((n, num_patterns))
+    ranks = np.full((n, num_patterns), np.inf)
+    for j, candle in enumerate(candle_names):
+        res = getattr(talib, candle)(op, hi, lo, cl)
+        vals[:, j] = res
+        bull_rank = PATTERN_RANKINGS.get(f"{candle}_Bull", 999)
+        bear_rank = PATTERN_RANKINGS.get(f"{candle}_Bear", 999)
+        ranks[:, j] = np.where(res > 0, bull_rank, np.where(res < 0, bear_rank, np.inf))
+
+    match_count = (vals != 0).sum(axis=1).astype(int)
+    has_any = match_count > 0
+    best_idx = ranks.argmin(axis=1)  # index of best (lowest rank) pattern per row
+
+    patterns = np.full(n, "NO_PATTERN", dtype=object)
+    directions = np.full(n, "neutral", dtype=object)
+    for i in np.where(has_any)[0]:
+        j = best_idx[i]
+        value = vals[i, j]
+        patterns[i] = f"{candle_names[j]}_{'Bull' if value > 0 else 'Bear'}"
+        directions[i] = 'bullish' if value > 0 else 'bearish'
+
+    df['candlestick_pattern'] = patterns
+    df['candlestick_match_count'] = match_count
+    df['pattern_direction'] = directions
     df['pattern_display'] = df['candlestick_pattern'].str.replace('NO_PATTERN|CDL|_Bull|_Bear', '', regex=True)
     return df
 
@@ -889,7 +728,7 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
         now = pd.Timestamp.now(tz=None)
         data_date = current_date.tz_localize(None) if current_date.tzinfo else current_date
         data_age_days = (now - data_date).days
-    except:
+    except Exception:
         data_age_days = 0
     
     warnings = []
@@ -952,12 +791,18 @@ def calculate_signal_strength(phase: str, wyckoff: dict, df: pd.DataFrame, lookb
     score += phase_score
     breakdown['phase'] = phase_score
     
-    # Wyckoff score (+/-20)
-    wyckoff_scores = {
-        'SMART MONEY BUYING': 20, 'TRENDING UP': 15, 'SIDEWAYS': 0,
-        'TRENDING DOWN': -15, 'SMART MONEY SELLING': -20
-    }
-    wyckoff_score = wyckoff_scores.get(wyckoff.get('label', ''), 0)
+    # Wyckoff score (+/-20) - match the labels detect_wyckoff_enhanced actually emits
+    wyckoff_label = wyckoff.get('label', '') or ''
+    if 'ACCUMULATION' in wyckoff_label:
+        wyckoff_score = 20
+    elif 'DISTRIBUTION' in wyckoff_label:
+        wyckoff_score = -20
+    elif 'UPTREND' in wyckoff_label:
+        wyckoff_score = 15
+    elif 'DOWNTREND' in wyckoff_label:
+        wyckoff_score = -15
+    else:  # SIDEWAYS / CONSOLIDATION / N/A
+        wyckoff_score = 0
     score += wyckoff_score
     breakdown['wyckoff'] = wyckoff_score
     
@@ -1032,7 +877,7 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
 def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data_source: str = 'yahoo') -> dict:
     """Fetch comprehensive investment data for a single symbol."""
     try:
-        df = fetch_data_raw(symbol, interval, data_source)
+        df = fetch_data(symbol, interval, data_source)
         if df.empty:
             return {
                 'symbol': symbol, 'status': '❓', 'phase': 'No Data', 
@@ -1189,7 +1034,11 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
         rec = 'STRONG SELL ZONE'
         conf = 'HIGH'
     
-    return {'score': score, 'factors': factors, 'recommendation': rec, 'confidence': conf}
+    return {
+        'score': score, 'factors': factors, 'recommendation': rec, 'confidence': conf,
+        'phase_d': phase_d, 'phase_w': phase_w,
+        'df_daily': df_daily, 'df_weekly': df_weekly,
+    }
 
 def calculate_trend_strength_adx(df: pd.DataFrame, period: int = 14) -> dict:
     """Calculate ADX-based trend strength."""
@@ -1224,7 +1073,7 @@ def calculate_trend_strength_adx(df: pd.DataFrame, period: int = 14) -> dict:
             direction = 'neutral'
         
         return {'adx': current_adx, 'strength': strength, 'direction': direction, 'plus_di': current_plus, 'minus_di': current_minus}
-    except:
+    except Exception:
         return {'adx': 0, 'strength': 'ERROR', 'direction': 'neutral'}
 
 # --- Validation and Warning Functions ---
@@ -1374,9 +1223,15 @@ with st.sidebar:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("➕ Add", use_container_width=True):
-                if new_symbol and new_symbol.upper() not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(new_symbol.upper())
-                    st.rerun()
+                if new_symbol:
+                    is_valid_add, cleaned_add, msg_add = validate_symbol(new_symbol)
+                    if not is_valid_add:
+                        st.error(f"❌ {msg_add}")
+                    elif cleaned_add in st.session_state.watchlist:
+                        st.warning(f"{cleaned_add} already in watchlist")
+                    else:
+                        st.session_state.watchlist.append(cleaned_add)
+                        st.rerun()
         with col2:
             if st.button("🗑️ Clear", use_container_width=True):
                 st.session_state.watchlist = []
@@ -1413,7 +1268,7 @@ with st.sidebar:
         st.divider()
         st.subheader("🔑 API Status")
         
-        api_configured = bool(os.environ.get('COINALYZE_API_KEY', ''))
+        api_configured = bool(get_coinalyze_api_key())
         if api_configured:
             st.success("✅ Coinalyze API configured")
         else:
@@ -1475,7 +1330,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         # Metrics
         last = df.iloc[-1]
         prev = df.iloc[-2]
-        pct_change = ((last['close'] - prev['close']) / prev['close']) * 100
+        pct_change = safe_pct_change(last['close'], prev['close'])
         
         col1, col2, col3, col4 = st.columns(4)
         col1.metric(f"{symbol}", f"${last['close']:,.2f}", f"{pct_change:+.2f}%")
@@ -1800,12 +1655,12 @@ elif analysis_mode == "🔄 Timeframe Compare":
             df_w = fetch_data(symbol, '1wk', st.session_state.data_source)
         
         if not df_d.empty and not df_w.empty:
-            # Calculate alignment score
-            alignment = calculate_mtf_alignment(df_d.copy(), df_w.copy())
-            
-            # Re-analyze for display (since mtf_alignment modifies dfs)
-            phase_d, _, df_d = analyze_ad_phase_fast(df_d, 26)
-            phase_w, _, df_w = analyze_ad_phase_fast(df_w, 52)
+            # Calculate alignment score (reuse the analyzed dataframes it produces)
+            alignment = calculate_mtf_alignment(df_d, df_w)
+            phase_d = alignment['phase_d']
+            phase_w = alignment['phase_w']
+            df_d = alignment['df_daily']
+            df_w = alignment['df_weekly']
             wyck_d = detect_wyckoff_enhanced(df_d, 26)
             wyck_w = detect_wyckoff_enhanced(df_w, 52)
             
@@ -2007,7 +1862,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
             oi_history = fetch_open_interest_history(symbol, oi_period, oi_days)
             funding = fetch_funding_rate(symbol)
             ls_ratio = fetch_long_short_ratio(symbol)
-            df_price = fetch_data(symbol, '1d')
+            df_price = fetch_data(symbol, '1d', st.session_state.data_source)
         
         # Debug expander - show what was fetched
         with st.expander("🔧 Debug: API Response Status", expanded=False):
@@ -2019,7 +1874,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
             with col2:
                 st.write("**L/S Ratio:**", "✅" if not ls_ratio.get('error') else f"❌ {ls_ratio.get('error')}")
                 st.write("**Price Data:**", f"✅ {len(df_price)} rows" if not df_price.empty else "❌ Empty")
-                st.write("**API Key:**", "✅ Set" if os.environ.get('COINALYZE_API_KEY') else "❌ Not set")
+                st.write("**API Key:**", "✅ Set" if get_coinalyze_api_key() else "❌ Not set")
         
         # Check for critical errors
         has_error = oi_current.get('error') and 'timeout' not in str(oi_current.get('error', '')).lower()
@@ -2035,7 +1890,6 @@ elif analysis_mode == "📈 Open Interest Monitor":
         else:
             # --- CALCULATE ALL METRICS ---
             current_oi = oi_current.get('oi', 0)
-            binance_sym = oi_current.get('binance_symbol', symbol)
             
             # OI change
             oi_change_pct = 0
@@ -2288,11 +2142,11 @@ elif analysis_mode == "📈 Open Interest Monitor":
                     **❌ OI History Failed to Load**
                     
                     Possible causes:
-                    1. SOCKS5 proxy not configured or not working
-                    2. Binance API blocked (common from USA without proxy)
-                    3. Symbol doesn't have futures data
+                    1. `COINALYZE_API_KEY` not set or invalid
+                    2. Symbol has no perpetual/futures data on Coinalyze
+                    3. Network/timeout reaching the Coinalyze API
                     
-                    **Fix:** Check `SOCKS5_PROXY_URL` in Streamlit Secrets
+                    **Fix:** Verify `COINALYZE_API_KEY` in Streamlit Secrets (get a free key at coinalyze.net)
                     """)
                 elif price_rows == 0:
                     st.error("❌ Price data failed to load from Yahoo Finance")

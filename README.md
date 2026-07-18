@@ -112,6 +112,62 @@ streamlit run app.py
 2. Get your free API key (1000 calls/month)
 3. Add to Streamlit Secrets as shown above
 
+## 🐳 Docker / GHCR Deployment
+
+Every push to `main`/`master` (and every `v*` tag) builds a container image and
+publishes it to the GitHub Container Registry via GitHub Actions
+(`.github/workflows/docker-publish.yml`). No registry secrets are required —
+it uses the built-in `GITHUB_TOKEN`.
+
+**Image:** `ghcr.io/<your-github-username>/<repo-name>:latest`
+
+> After the first successful run, open the package on GitHub → **Package settings**
+> and set visibility to **Public** if you want to pull it without authentication.
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8501` | Port the app listens on. Most PaaS inject this automatically. |
+| `COINALYZE_API_KEY` | – | Required for the Open Interest Monitor. |
+| `CRYPTOCOMPARE_API_KEY` | – | Optional alternative price data source. |
+
+### Run locally
+
+```bash
+docker run --rm -p 8501:8501 \
+  -e COINALYZE_API_KEY=your-key \
+  ghcr.io/<your-github-username>/<repo-name>:latest
+# open http://localhost:8501
+```
+
+To run on a different port:
+
+```bash
+docker run --rm -e PORT=9000 -p 9000:9000 ghcr.io/<your-github-username>/<repo-name>:latest
+```
+
+### Deploy on Render
+
+1. **New → Web Service → Deploy an existing image from a registry**
+2. Image URL: `ghcr.io/<your-github-username>/<repo-name>:latest`
+3. Render sets `PORT` automatically — the app binds to it, no extra config needed.
+4. Add `COINALYZE_API_KEY` under **Environment**.
+
+### Deploy on Portainer
+
+1. **Stacks / Containers → Add container**
+2. Image: `ghcr.io/<your-github-username>/<repo-name>:latest`
+3. Map a host port to container port `8501` (or set `PORT` and map that port).
+4. Add env vars (`PORT`, `COINALYZE_API_KEY`) under **Env**.
+
+### Build the image yourself
+
+```bash
+docker build -t candlestick-watcher .
+docker run --rm -p 8501:8501 candlestick-watcher
+```
+
 ## 📝 License
 
 MIT
