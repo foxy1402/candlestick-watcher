@@ -97,7 +97,7 @@ def convert_symbol_to_coinalyze(symbol: str) -> str:
     """Convert Yahoo Finance symbol to Coinalyze format.
     BTC-USD -> BTCUSD_PERP.A (Binance perpetual)
     """
-    base = symbol.upper().replace('-USD', '').replace('USDT', '')
+    base = symbol.upper().split('-')[0].replace('USDT', '').replace('USD', '')
     return f"{base}USD_PERP.A"  # Binance perpetual format
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -349,12 +349,6 @@ def safe_pct_change(current: float, previous: float) -> float:
         return 0.0
     return ((current - previous) / previous) * 100
 
-def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-    """Safe division with zero/NaN protection."""
-    if denominator == 0 or pd.isna(denominator) or pd.isna(numerator):
-        return default
-    return numerator / denominator
-
 def safe_series_diff(series: pd.Series, lookback: int) -> float:
     """Safely calculate series difference with lookback."""
     if len(series) < lookback + 1:
@@ -418,12 +412,17 @@ def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
             df.columns = df.columns.get_level_values(0)
         df = df.reset_index()
         df.columns = [c.lower() for c in df.columns]
-        if 'date' in df.columns:
-            df.rename(columns={'date': 'timestamp'}, inplace=True)
+        date_cols = [c for c in df.columns if c in ('date', 'datetime')]
+        if date_cols:
+            df.rename(columns={date_cols[0]: 'timestamp'}, inplace=True)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
+        # Drop incomplete/broken bars (NaN, zero-priced) the same way the
+        # CryptoCompare path does, so downstream logic never sees them.
+        df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
+        df = df[(df['open'] > 0) & (df['close'] > 0)]
         return df
     except Exception:
         return pd.DataFrame()
@@ -459,7 +458,8 @@ def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
     vals = np.zeros((n, num_patterns))
     ranks = np.full((n, num_patterns), np.inf)
     for j, candle in enumerate(candle_names):
-        res = getattr(talib, candle)(op, hi, lo, cl)
+        # NaN/inf must never count as a pattern match (NaN != 0 would be True)
+        res = np.nan_to_num(getattr(talib, candle)(op, hi, lo, cl), nan=0.0, posinf=0.0, neginf=0.0)
         vals[:, j] = res
         bull_rank = PATTERN_RANKINGS.get(f"{candle}_Bull", 999)
         bear_rank = PATTERN_RANKINGS.get(f"{candle}_Bear", 999)
@@ -480,7 +480,6 @@ def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
     df['candlestick_pattern'] = patterns
     df['candlestick_match_count'] = match_count
     df['pattern_direction'] = directions
-    df['pattern_display'] = df['candlestick_pattern'].str.replace('NO_PATTERN|CDL|_Bull|_Bear', '', regex=True)
     return df
 
 def analyze_ad_phase_fast(df: pd.DataFrame, lookback: int = 20) -> tuple:
@@ -577,8 +576,6 @@ def detect_wyckoff_enhanced(df: pd.DataFrame, lookback: int = 52) -> dict:
     confidence = "HIGH"
     if volatility > 0.15:  # High volatility
         confidence = "MEDIUM"
-    if len(recent) < lookback * 0.8:  # Missing data
-        confidence = "LOW"
     
     # Accumulation: Low price, A/D rising, volume confirmation
     if price_in_lower_quartile and ad_trend > 0:
@@ -668,21 +665,15 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
     if df.empty or 'phase' not in df.columns:
         return []
     
+    # Group consecutive same-phase runs on the FULL frame first; grouping after
+    # filtering would merge zones across interruptions of other phases.
+    df_grouped = df.copy()
+    df_grouped['group'] = (df_grouped['phase'] != df_grouped['phase'].shift()).cumsum()
+    
     zones = []
-    phase_mask = df['phase'].isin(['accumulation', 'distribution'])
-    
-    if not phase_mask.any():
-        return zones
-    
-    # Find zone boundaries using diff
-    df_filtered = df[phase_mask].copy()
-    if df_filtered.empty:
-        return zones
-    
-    # Group consecutive same phases
-    df_filtered['group'] = (df_filtered['phase'] != df_filtered['phase'].shift()).cumsum()
-    
-    for _, group in df_filtered.groupby('group'):
+    for _, group in df_grouped.groupby('group'):
+        if group['phase'].iloc[0] not in ('accumulation', 'distribution'):
+            continue
         zones.append({
             'phase': group['phase'].iloc[0],
             'start': group['timestamp'].iloc[0],
@@ -692,9 +683,9 @@ def get_phase_zones_fast(df: pd.DataFrame) -> list:
     return zones  # Return all zones
 
 def find_closest_price(df: pd.DataFrame, target_date: pd.Timestamp, current_price: float) -> tuple:
-    """Find price closest to target date, return (price, actual_days_diff)."""
+    """Find price closest to target date, return (price, actual_date)."""
     if df.empty:
-        return current_price, 0
+        return current_price, target_date
     
     # Calculate absolute time difference
     df_copy = df.copy()
@@ -705,10 +696,7 @@ def find_closest_price(df: pd.DataFrame, target_date: pd.Timestamp, current_pric
     closest_price = df_copy.loc[closest_idx, 'close']
     actual_date = df_copy.loc[closest_idx, 'timestamp']
     
-    # Calculate actual days difference for validation
-    actual_days = abs((actual_date - target_date).days)
-    
-    return closest_price, actual_days
+    return closest_price, actual_date
 
 def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     """Calculate multi-period performance returns using closest timestamp matching."""
@@ -737,23 +725,23 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     
     # 7D return with closest matching
     target_7d = current_date - pd.Timedelta(days=7)
-    price_7d, days_diff_7d = find_closest_price(df, target_7d, current_price)
-    if days_diff_7d > 2:  # More than 2 days off target
-        warnings.append(f'7D return based on {7 + days_diff_7d}D ago (data gaps)')
+    price_7d, date_7d = find_closest_price(df, target_7d, current_price)
+    if abs((date_7d - target_7d).days) > 2:  # More than 2 days off target
+        warnings.append(f'7D return based on {abs((current_date - date_7d).days)}D ago (data gaps)')
     ret_7d = safe_pct_change(current_price, price_7d)
     
     # 30D return
     target_30d = current_date - pd.Timedelta(days=30)
-    price_30d, days_diff_30d = find_closest_price(df, target_30d, current_price)
-    if days_diff_30d > 5:
-        warnings.append(f'30D return based on {30 + days_diff_30d}D ago (data gaps)')
+    price_30d, date_30d = find_closest_price(df, target_30d, current_price)
+    if abs((date_30d - target_30d).days) > 5:
+        warnings.append(f'30D return based on {abs((current_date - date_30d).days)}D ago (data gaps)')
     ret_30d = safe_pct_change(current_price, price_30d)
     
     # 90D return
     target_90d = current_date - pd.Timedelta(days=90)
-    price_90d, days_diff_90d = find_closest_price(df, target_90d, current_price)
-    if days_diff_90d > 10:
-        warnings.append(f'90D return based on {90 + days_diff_90d}D ago (data gaps)')
+    price_90d, date_90d = find_closest_price(df, target_90d, current_price)
+    if abs((date_90d - target_90d).days) > 10:
+        warnings.append(f'90D return based on {abs((current_date - date_90d).days)}D ago (data gaps)')
     ret_90d = safe_pct_change(current_price, price_90d)
     
     # YTD return
@@ -942,8 +930,8 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data
             'signal_score': 0, 'levels': {}, 'action': 'ERROR'
         }
 
-def get_watchlist_status_parallel(symbols: list, interval: str = '1wk', lookback: int = 52, data_source: str = 'yahoo') -> list:
-    """Fetch watchlist status SEQUENTIALLY - yfinance has thread-safety issues with ThreadPoolExecutor."""
+def get_watchlist_status(symbols: list, interval: str = '1wk', lookback: int = 52, data_source: str = 'yahoo') -> list:
+    """Fetch watchlist status sequentially - yfinance has thread-safety issues with ThreadPoolExecutor."""
     results = []
     for sym in symbols:
         result = fetch_symbol_status_enhanced(sym, interval, lookback, data_source)
@@ -976,7 +964,7 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
         phase_align = 0
     
     score += phase_align // 2
-    factors['phase_alignment'] = phase_align
+    factors['phase_alignment'] = phase_align // 2  # store actual contribution to score
     
     # Trend direction (30 points) - check length BEFORE accessing index
     if len(df_daily) >= 20:
@@ -997,7 +985,7 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
         trend_align = 0
     
     score += trend_align // 2
-    factors['trend_alignment'] = trend_align
+    factors['trend_alignment'] = trend_align // 2  # store actual contribution to score
     
     # A/D momentum (30 points) - with proper bounds checking using safe_series_diff
     if 'ad' in df_daily.columns and 'ad' in df_weekly.columns:
@@ -1012,7 +1000,7 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
             ad_align = 0
         
         score += ad_align // 2
-        factors['ad_alignment'] = ad_align
+        factors['ad_alignment'] = ad_align // 2  # store actual contribution to score
     
     # Clamp score
     score = max(0, min(100, score))
@@ -1079,7 +1067,8 @@ def calculate_trend_strength_adx(df: pd.DataFrame, period: int = 14) -> dict:
 # --- Validation and Warning Functions ---
 def validate_symbol(symbol: str) -> tuple:
     """
-    Validate symbol format.
+    Validate symbol format (BTC-USD / BTCUSD / BTCUSDT style pairs only,
+    matching what the data-source converters actually support).
     Returns: (is_valid: bool, cleaned_symbol: str, message: str)
     """
     if not symbol:
@@ -1097,10 +1086,18 @@ def validate_symbol(symbol: str) -> tuple:
         parts = symbol.split('-')
         if len(parts) != 2:
             return False, symbol, "Use format: BTC-USD"
-        if not parts[0].isalpha() or not parts[1].isalpha():
-            return False, symbol, "Symbol parts must be letters only"
+        if not parts[0].isalpha():
+            return False, symbol, "Base symbol must be letters only"
+        if parts[1] != 'USD':
+            return False, symbol, "Use format: BTC-USD (only USD quote supported)"
     else:
-        if not symbol.replace('USDT', '').replace('USD', '').isalpha():
+        if symbol.endswith('USDT'):
+            base = symbol[:-4]
+        elif symbol.endswith('USD'):
+            base = symbol[:-3]
+        else:
+            return False, symbol, "Use format: BTC-USD or BTCUSDT"
+        if not base or not base.isalpha():
             return False, symbol, "Invalid symbol format"
     
     return True, symbol, ""
@@ -1307,6 +1304,10 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             st.error(f"❌ Data missing required columns: {missing_cols}")
             st.stop()
         
+        if len(df) < 2:
+            st.error("❌ Insufficient data: need at least 2 bars for analysis")
+            st.stop()
+        
         if len(df) < lookback_period:
             st.warning(f"""
             ⚠️ Insufficient data for {lookback_period} period analysis
@@ -1322,7 +1323,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         show_data_freshness_warning(perf['data_age_days'], perf.get('warnings'))
         
         df = detect_patterns_optimized(df)
-        phase, color, df = analyze_ad_phase_fast(df, lookback=lookback_period)
+        phase, _, df = analyze_ad_phase_fast(df, lookback=lookback_period)
         df = generate_signals_fast(df)
         wyckoff = detect_wyckoff_enhanced(df, lookback_period)
         zones = get_phase_zones_fast(df)
@@ -1399,7 +1400,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         with col2:
             st.metric("A/D Change", f"{ad_trend_pct:+.1f}%")
         with col3:
-            price_chg = df['close'].iloc[-1] - df['close'].iloc[-lookback_period] if len(df) > lookback_period else 0
+            price_chg = df['close'].iloc[-1] - df['close'].iloc[-lookback_period] if len(df) >= lookback_period else 0
             if price_chg < 0 and ad_trend > 0:
                 st.success("🔍 Bullish Divergence")
             elif price_chg > 0 and ad_trend < 0:
@@ -1458,7 +1459,7 @@ elif analysis_mode == "📋 Watchlist Dashboard":
         st.info("Watchlist empty. Add symbols via sidebar.")
     elif 'refresh_btn' in dir() and refresh_btn:
         with st.spinner("Fetching comprehensive data..."):
-            data = get_watchlist_status_parallel(st.session_state.watchlist, '1wk', 52, st.session_state.data_source)
+            data = get_watchlist_status(st.session_state.watchlist, '1wk', 52, st.session_state.data_source)
         
         # --- OPPORTUNITY HIGHLIGHT CARDS ---
         st.markdown("### 🎯 Quick Insights")
@@ -1514,7 +1515,8 @@ elif analysis_mode == "📋 Watchlist Dashboard":
         # --- SUMMARY METRICS ---
         accum = sum(1 for w in data if w['phase'] == 'Accumulation')
         distrib = sum(1 for w in data if w['phase'] == 'Distribution')
-        avg_score = sum(d['signal_score'] for d in data) / len(data) if data else 0
+        scored = [d['signal_score'] for d in data if d['price'] > 0]  # exclude failed fetches
+        avg_score = sum(scored) / len(scored) if scored else 0
         
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("🟢 Accumulation", accum)
@@ -1549,25 +1551,6 @@ elif analysis_mode == "📋 Watchlist Dashboard":
             })
         
         df_table = pd.DataFrame(table_data)
-        
-        # Format percentage columns with colors
-        def color_returns(val):
-            if isinstance(val, (int, float)):
-                color = 'color: #26a69a' if val > 0 else 'color: #ef5350' if val < 0 else ''
-                return color
-            return ''
-        
-        def color_score(val):
-            if val >= 80:
-                return 'background-color: rgba(38, 166, 154, 0.3)'
-            elif val >= 60:
-                return 'background-color: rgba(255, 235, 59, 0.3)'
-            elif val >= 40:
-                return ''
-            elif val >= 20:
-                return 'background-color: rgba(255, 152, 0, 0.3)'
-            else:
-                return 'background-color: rgba(239, 83, 80, 0.3)'
         
         # Display with column config
         st.dataframe(
@@ -1898,13 +1881,19 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 last_oi = oi_history['sumOpenInterest'].iloc[-1]
                 oi_change_pct = safe_pct_change(last_oi, first_oi)
             
-            # Price change (match to OI history length)
+            # Price change over the SAME calendar window as the OI history.
+            # Align by timestamp, never by row count: OI bars (4h/daily) and
+            # price bars (daily) have different resolutions.
             price_change_pct = 0
             current_price = 0
             if not df_price.empty and len(df_price) >= 2:
-                lookback = min(len(df_price), len(oi_history)) if not oi_history.empty else 30
-                first_price = df_price['close'].iloc[-lookback]
                 current_price = df_price['close'].iloc[-1]
+                if not oi_history.empty:
+                    window_start = oi_history['timestamp'].iloc[0]
+                    past = df_price[df_price['timestamp'] <= window_start]
+                    first_price = past['close'].iloc[-1] if not past.empty else df_price['close'].iloc[0]
+                else:
+                    first_price = df_price['close'].iloc[-30] if len(df_price) >= 30 else df_price['close'].iloc[0]
                 price_change_pct = safe_pct_change(current_price, first_price)
             
             # Funding rate
@@ -1961,11 +1950,13 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 st.metric("Open Interest", oi_display, delta=f"{oi_change_pct:+.2f}%")
             
             with col2:
-                # Funding rate interpretation
+                # Funding rate interpretation (thresholds match calculate_derivatives_score)
                 if funding_rate < -0.01:
                     funding_label = f"{funding_rate:.4f}% 🟢"
-                elif funding_rate > 0.03:
+                elif funding_rate > 0.05:
                     funding_label = f"{funding_rate:.4f}% 🔴"
+                elif funding_rate > 0.01:
+                    funding_label = f"{funding_rate:.4f}% 🟠"
                 else:
                     funding_label = f"{funding_rate:.4f}%"
                 st.metric("Funding Rate", funding_label)
@@ -2016,15 +2007,15 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 oi_start = oi_history['timestamp'].min()
                 df_price_filtered = df_price[df_price['timestamp'] >= oi_start].copy()
                 
+                # Signal markers (initialized unconditionally - used by the chart below)
+                bullish_points = []
+                bearish_points = []
+                weak_points = []
+                cap_points = []
+                
                 # Merge price changes into OI history for signal calculation
                 if not df_price_filtered.empty:
                     df_price_filtered['price_pct_change'] = df_price_filtered['close'].pct_change(periods=5) * 100
-                    
-                    # Create signal markers
-                    bullish_points = []
-                    bearish_points = []
-                    weak_points = []
-                    cap_points = []
                     
                     for i, row in oi_history.iterrows():
                         oi_chg = row.get('oi_pct_change', 0)
