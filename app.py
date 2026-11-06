@@ -97,7 +97,13 @@ def convert_symbol_to_coinalyze(symbol: str) -> str:
     """Convert Yahoo Finance symbol to Coinalyze format.
     BTC-USD -> BTCUSD_PERP.A (Binance perpetual)
     """
-    base = symbol.upper().split('-')[0].replace('USDT', '').replace('USD', '')
+    base = symbol.upper().split('-')[0]
+    # Strip only the quote suffix; a blanket replace('USD','') would turn
+    # USDC/USDD into "C"/"D" and fetch the wrong perpetual.
+    if base.endswith('USDT'):
+        base = base[:-4]
+    elif base.endswith('USD'):
+        base = base[:-3]
     return f"{base}USD_PERP.A"  # Binance perpetual format
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -110,7 +116,7 @@ def fetch_open_interest(symbol: str) -> dict:
         
         coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
         
-        url = f"https://api.coinalyze.net/v1/open-interest"
+        url = "https://api.coinalyze.net/v1/open-interest"
         params = {'symbols': coinalyze_symbol}
         headers = {'api_key': api_key}
         
@@ -152,7 +158,7 @@ def fetch_open_interest_history(symbol: str, period: str = 'daily', days: int = 
         to_time = int(datetime.now().timestamp())
         from_time = int((datetime.now() - timedelta(days=days)).timestamp())
         
-        url = f"https://api.coinalyze.net/v1/open-interest-history"
+        url = "https://api.coinalyze.net/v1/open-interest-history"
         params = {
             'symbols': coinalyze_symbol,
             'interval': period,
@@ -178,7 +184,7 @@ def fetch_open_interest_history(symbol: str, period: str = 'daily', days: int = 
         df['sumOpenInterest'] = df['c'].astype(float)  # Use close value for current OI
         
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -191,7 +197,7 @@ def fetch_funding_rate(symbol: str) -> dict:
         
         coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
         
-        url = f"https://api.coinalyze.net/v1/funding-rate"
+        url = "https://api.coinalyze.net/v1/funding-rate"
         params = {'symbols': coinalyze_symbol}
         headers = {'api_key': api_key}
         
@@ -227,7 +233,7 @@ def fetch_long_short_ratio(symbol: str) -> dict:
         to_time = int(datetime.now().timestamp())
         from_time = int((datetime.now() - timedelta(hours=24)).timestamp())
         
-        url = f"https://api.coinalyze.net/v1/long-short-ratio-history"
+        url = "https://api.coinalyze.net/v1/long-short-ratio-history"
         params = {
             'symbols': coinalyze_symbol,
             'interval': '1hour',  # Must be '1hour' not 'hour'
@@ -404,7 +410,14 @@ def fetch_data_yfinance(symbol: str, interval: str) -> pd.DataFrame:
 def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
     """Fetch from yfinance WITHOUT cache."""
     try:
-        ticker = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
+        # Validation accepts BTC-USD / BTCUSD / BTCUSDT; Yahoo needs the
+        # dashed pair form, so normalize only the suffix-only variants.
+        ticker = symbol.upper()
+        if "-" not in ticker:
+            if ticker.endswith("USDT"):
+                ticker = ticker[:-4] + "-USD"
+            elif ticker.endswith("USD"):
+                ticker = ticker[:-3] + "-USD"
         df = yf.download(ticker, period="max", interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame()
@@ -862,6 +875,7 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
         'pivot': pivot
     }
 
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data_source: str = 'yahoo') -> dict:
     """Fetch comprehensive investment data for a single symbol."""
     try:
@@ -922,7 +936,7 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data
             'levels': levels,
             'action': action
         }
-    except Exception as e:
+    except Exception:
         return {
             'symbol': symbol, 'status': '❌', 'phase': 'Error', 
             'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❌',
@@ -1191,6 +1205,19 @@ with st.sidebar:
     
     st.divider()
     
+    # Chart display window. This is a rendering setting only: every indicator,
+    # phase, zone and signal below is still computed on the full history.
+    st.subheader("📊 Chart Display")
+    chart_bars = st.selectbox(
+        "Bars shown on charts",
+        options=[250, 500, 750, 1000, "All"],
+        index=4,
+        format_func=lambda x: f"Last {x} bars" if isinstance(x, int) else "All history",
+        help="Display setting only. Signals and zones are still calculated on the full history.",
+    )
+    
+    st.divider()
+    
     analysis_mode = st.radio(
         "Analysis Mode",
         ["📊 Single Asset", "📋 Watchlist Dashboard", "🔄 Timeframe Compare", "📈 Open Interest Monitor"],
@@ -1351,22 +1378,42 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         
         # Price Chart with Zones
         st.subheader("📈 Price Chart with A/D Zones")
+
+        # Render window only. Signals, phases and zones were computed above on
+        # the full history; this caps the bars sent to the browser.
+        plot_df = df if chart_bars == "All" else df.tail(int(chart_bars))
+        window_start = plot_df['timestamp'].iloc[0]
+        visible_zones = [z for z in zones if z['end'] >= window_start]
+
+        if chart_bars != "All":
+            st.caption(f"Showing the last {len(plot_df):,} of {len(df):,} bars. Analysis uses the full history.")
+
         fig = go.Figure()
-        
-        for zone in zones:
-            zone_color = 'rgba(0, 255, 0, 0.1)' if zone['phase'] == 'accumulation' else 'rgba(255, 0, 0, 0.1)'
-            fig.add_vrect(x0=zone['start'], x1=zone['end'], fillcolor=zone_color, layer="below", line_width=0)
-        
-        # Full chart data - no limits
+
+        # Build every zone as one shape list. Calling add_vrect() per zone
+        # re-validates the whole layout each time (~4 s for a few hundred
+        # zones); a single batched update is ~24 ms and renders identically.
+        if visible_zones:
+            fig.update_layout(shapes=[
+                dict(
+                    type="rect",
+                    x0=zone['start'], x1=zone['end'],
+                    y0=0, y1=1, xref="x", yref="y domain",
+                    layer="below", line_width=0,
+                    fillcolor='rgba(0, 255, 0, 0.1)' if zone['phase'] == 'accumulation' else 'rgba(255, 0, 0, 0.1)',
+                )
+                for zone in visible_zones
+            ])
+
         fig.add_trace(go.Candlestick(
-            x=df['timestamp'], open=df['open'], high=df['high'], 
-            low=df['low'], close=df['close'], name=symbol,
+            x=plot_df['timestamp'], open=plot_df['open'], high=plot_df['high'], 
+            low=plot_df['low'], close=plot_df['close'], name=symbol,
             increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
         ))
         
-        # Entry signals - full data
-        strong_buys = df[df['signal'] == 'strong_buy']
-        strong_sells = df[df['signal'] == 'strong_sell']
+        # Entry signals - same computed signals, windowed for rendering
+        strong_buys = plot_df[plot_df['signal'] == 'strong_buy']
+        strong_sells = plot_df[plot_df['signal'] == 'strong_sell']
         
         if not strong_buys.empty:
             fig.add_trace(go.Scatter(
@@ -1408,11 +1455,12 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             else:
                 st.info("🔍 Aligned")
         
-        # A/D chart - full data
+        # A/D chart - same series, windowed for rendering
+        ad_plot = df if chart_bars == "All" else df.tail(int(chart_bars))
         ad_fig = go.Figure()
-        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad'], name='A/D Line', 
+        ad_fig.add_trace(go.Scatter(x=ad_plot['timestamp'], y=ad_plot['ad'], name='A/D Line', 
                                     line=dict(color='orange', width=2), fill='tozeroy', fillcolor='rgba(255,165,0,0.1)'))
-        ad_fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ad_ema'], name='EMA 21', 
+        ad_fig.add_trace(go.Scatter(x=ad_plot['timestamp'], y=ad_plot['ad_ema'], name='EMA 21', 
                                     line=dict(color='yellow', dash='dot', width=1)))
         ad_fig.update_layout(height=250, template='plotly_dark')
         st.plotly_chart(ad_fig, width='stretch', config={'scrollZoom': True})
@@ -1694,7 +1742,6 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Phase", f"{phase_color} {phase_d.title()}")
                 
                 # Trend strength
-                trend_dir_emoji = "📈" if trend_d['direction'] == 'bullish' else "📉" if trend_d['direction'] == 'bearish' else "↔️"
                 st.metric("Trend", f"{trend_d['strength']}", delta=f"ADX: {trend_d['adx']:.1f}")
                 
                 # A/D status
@@ -1713,7 +1760,6 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Phase", f"{phase_color} {phase_w.title()}")
                 
                 # Trend strength
-                trend_dir_emoji = "📈" if trend_w['direction'] == 'bullish' else "📉" if trend_w['direction'] == 'bearish' else "↔️"
                 st.metric("Trend", f"{trend_w['strength']}", delta=f"ADX: {trend_w['adx']:.1f}")
                 
                 # A/D status
@@ -1759,13 +1805,13 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 *Strategy: Consider DCA (Dollar Cost Averaging) if price enters this zone*
                 """)
             elif score >= 40:
-                st.info(f"""
+                st.info("""
                 **⏳ Wait Zone:** Market conditions mixed
                 
                 *Strategy: Wait for clearer signals before entering*
                 """)
             else:
-                st.warning(f"""
+                st.warning("""
                 **⚠️ Caution Zone:** Unfavorable conditions
                 
                 *Strategy: Avoid new entries, consider reducing exposure if in profit*
@@ -1775,20 +1821,26 @@ elif analysis_mode == "🔄 Timeframe Compare":
             
             # --- CHARTS ---
             st.markdown("### 📊 Price Charts")
+
+            # Render window only; the alignment score above used the full frames.
+            plot_d = df_d if chart_bars == "All" else df_d.tail(int(chart_bars))
+            plot_w = df_w if chart_bars == "All" else df_w.tail(int(chart_bars))
+            if chart_bars != "All":
+                st.caption(f"Showing the last {len(plot_d):,} daily and {len(plot_w):,} weekly bars. Analysis uses the full history.")
             
             fig = make_subplots(rows=2, cols=1, subplot_titles=("Daily", "Weekly"), vertical_spacing=0.12)
             
             # Daily chart with key levels
             fig.add_trace(go.Candlestick(
-                x=df_d['timestamp'], open=df_d['open'], high=df_d['high'],
-                low=df_d['low'], close=df_d['close'], name='Daily',
+                x=plot_d['timestamp'], open=plot_d['open'], high=plot_d['high'],
+                low=plot_d['low'], close=plot_d['close'], name='Daily',
                 increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=1, col=1)
             
             # Weekly chart with support/resistance
             fig.add_trace(go.Candlestick(
-                x=df_w['timestamp'], open=df_w['open'], high=df_w['high'],
-                low=df_w['low'], close=df_w['close'], name='Weekly',
+                x=plot_w['timestamp'], open=plot_w['open'], high=plot_w['high'],
+                low=plot_w['low'], close=plot_w['close'], name='Weekly',
                 increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
             ), row=2, col=1)
             
@@ -2017,7 +2069,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 if not df_price_filtered.empty:
                     df_price_filtered['price_pct_change'] = df_price_filtered['close'].pct_change(periods=5) * 100
                     
-                    for i, row in oi_history.iterrows():
+                    for _, row in oi_history.iterrows():
                         oi_chg = row.get('oi_pct_change', 0)
                         if pd.isna(oi_chg):
                             continue

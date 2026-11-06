@@ -2,7 +2,7 @@
 
 A **Streamlit web application** for long-term crypto investors. Analyzes market phases (Accumulation/Distribution), detects 50+ candlestick patterns, provides entry signals, and monitors derivatives data (Open Interest, Funding Rate, Long/Short Ratio).
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Cloud-red?logo=streamlit)
 ![TA-Lib](https://img.shields.io/badge/TA--Lib-Pattern%20Recognition-green)
 ![Coinalyze](https://img.shields.io/badge/Coinalyze-API-orange)
@@ -53,6 +53,12 @@ Select a coin and click "Analyze" to see:
 - **Wyckoff Phase**: Simple labels like "Smart Money Buying"
 - **Entry Signals**: ⭐ markers when pattern + phase align
 
+Use **Chart Display → Bars shown on charts** (default: All history) to choose how
+much history is drawn. This is display-only: every indicator, phase, zone and
+signal is always calculated on the full history. Shorter windows reduce the
+payload sent to the browser on slow connections; rendering itself is fast either
+way (phase zones are sent as one batched shape list).
+
 ### 3. Timeframe Comparison
 Check if Daily AND Weekly charts agree:
 - ✅ Both bullish = High confidence entry
@@ -87,14 +93,16 @@ The app includes a toggle to switch between Yahoo Finance and CryptoCompare:
 git clone https://github.com/foxy1402/candlestick-watcher.git
 cd candlestick-watcher
 
-# Install dependencies (requires TA-Lib C library)
+# Install dependencies
 pip install -r requirements.txt
 
 # Run
 streamlit run app.py
 ```
 
-> ⚠️ **Note**: TA-Lib requires a C library. On Windows, use pre-built wheels. On Linux/Mac, install via `brew install ta-lib` or `apt-get install libta-lib-dev`.
+> **Note**: `ta-lib` 0.6+ ships self-contained wheels for common Linux, macOS and
+> Windows/Python combinations, bundling the TA-Lib C library. No system package
+> or compiler is needed. Only unusual platforms require a source build.
 
 ## ☁️ Deploy to Streamlit Cloud
 
@@ -120,6 +128,11 @@ publishes it to the GitHub Container Registry via GitHub Actions
 it uses the built-in `GITHUB_TOKEN`.
 
 **Image:** `ghcr.io/foxy1402/candlestick-watcher:latest`
+
+The image is ~170 MB compressed (~590 MB on disk). TA-Lib ships as a
+self-contained manylinux wheel, so the build needs no compiler, `build-essential`,
+or system libraries. Unused Streamlit display extras (pydeck/altair/pillow) and
+package test suites are pruned in the same layer as the install.
 
 > After the first successful run, open the package on GitHub → **Package settings**
 > and set visibility to **Public** if you want to pull it without authentication.
