@@ -28,6 +28,7 @@ Analyze futures market data for smarter investment decisions:
 - **Long/Short Ratio**: See market positioning at a glance
 - **Investment Score**: 0-100 score combining all derivatives metrics
 - **Historical Signals**: Visual markers showing past bullish/bearish signals
+- **Market**: Binance USDT-margined perpetual (e.g. `BTCUSDT_PERP.A`), the main Binance futures market. OI changes are measured in coins, so they reflect positioning rather than price moves
 
 ### Derivatives Signal Interpretation
 
@@ -84,7 +85,7 @@ Select a coin and analyze derivatives data:
 
 The app includes a toggle to switch between Yahoo Finance and CryptoCompare:
 - **Yahoo Finance (Default)**: Recommended for weekly timeframe analysis as it provides native weekly candlestick data
-- **CryptoCompare**: Great for daily timeframe, but weekly data is simulated by aggregating daily candles (less accurate for weekly analysis)
+- **CryptoCompare**: Alternative source. Weekly bars are built from its daily candles as Monday-Sunday (UTC) weeks, so they line up with Yahoo's weekly candles
 
 ## 📦 Installation (Local)
 

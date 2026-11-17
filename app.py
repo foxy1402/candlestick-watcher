@@ -56,17 +56,22 @@ def fetch_data_cryptocompare_raw(symbol: str, interval: str) -> pd.DataFrame:
             fsym = parts[0].upper()
             tsym = parts[1].upper() if len(parts) > 1 else 'USD'
         else:
-            fsym = symbol.replace('USDT', '').replace('USD', '').upper()
+            # Strip only the quote suffix (USDCUSD must stay USDC, not "C")
+            fsym = symbol.upper()
+            if fsym.endswith('USDT'):
+                fsym = fsym[:-4]
+            elif fsym.endswith('USD'):
+                fsym = fsym[:-3]
             tsym = 'USD'
         
-        aggregate = 7 if interval == '1wk' else 1
-        
+        # Always fetch daily bars. Weekly bars are built below: CryptoCompare's
+        # aggregate=7 buckets are anchored to the first bar of its history (a
+        # Saturday), not to calendar weeks.
         url = "https://min-api.cryptocompare.com/data/histoday"
         params = {
             'fsym': fsym,
             'tsym': tsym,
             'allData': 'true',
-            'aggregate': aggregate,
             'api_key': api_key
         }
         
@@ -88,6 +93,16 @@ def fetch_data_cryptocompare_raw(symbol: str, interval: str) -> pd.DataFrame:
             df[col] = df[col].astype(float)
         
         df = df[(df['open'] > 0) & (df['close'] > 0)]
+        
+        if interval == '1wk':
+            # Monday-anchored weeks labelled by their Monday, same as Yahoo.
+            df = (
+                df.set_index('timestamp')
+                .resample('W-MON', label='left', closed='left')
+                .agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'})
+                .dropna(subset=['open', 'high', 'low', 'close'])
+                .reset_index()
+            )
         return df
     except Exception:
         return pd.DataFrame()
@@ -95,7 +110,7 @@ def fetch_data_cryptocompare_raw(symbol: str, interval: str) -> pd.DataFrame:
 
 def convert_symbol_to_coinalyze(symbol: str) -> str:
     """Convert Yahoo Finance symbol to Coinalyze format.
-    BTC-USD -> BTCUSD_PERP.A (Binance perpetual)
+    BTC-USD -> BTCUSDT_PERP.A (Binance USDT-margined perpetual)
     """
     base = symbol.upper().split('-')[0]
     # Strip only the quote suffix; a blanket replace('USD','') would turn
@@ -104,7 +119,10 @@ def convert_symbol_to_coinalyze(symbol: str) -> str:
         base = base[:-4]
     elif base.endswith('USD'):
         base = base[:-3]
-    return f"{base}USD_PERP.A"  # Binance perpetual format
+    # The USDT-margined perpetual is Binance's main market. BTCUSD_PERP.A is the
+    # much smaller coin-margined contract, whose positioning can be the exact
+    # opposite (e.g. L/S 0.32 there vs 2.90 on USDT on the same day).
+    return f"{base}USDT_PERP.A"
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_open_interest(symbol: str) -> dict:
@@ -117,7 +135,8 @@ def fetch_open_interest(symbol: str) -> dict:
         coinalyze_symbol = convert_symbol_to_coinalyze(symbol)
         
         url = "https://api.coinalyze.net/v1/open-interest"
-        params = {'symbols': coinalyze_symbol}
+        # USDT perps report OI in coins; ask for USD so the headline is comparable
+        params = {'symbols': coinalyze_symbol, 'convert_to_usd': 'true'}
         headers = {'api_key': api_key}
         
         response = requests.get(url, params=params, headers=headers, timeout=10)
@@ -180,10 +199,44 @@ def fetch_open_interest_history(symbol: str, period: str = 'daily', days: int = 
         df = pd.DataFrame(history)
         
         # Coinalyze returns OHLC format for OI: t=timestamp, o=open, h=high, l=low, c=close
+        # Values are in coins (not USD), so OI changes measure positioning and
+        # are not inflated or deflated by price moves.
         df['timestamp'] = pd.to_datetime(df['t'], unit='s')
         df['sumOpenInterest'] = df['c'].astype(float)  # Use close value for current OI
         
         return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_perp_price_history(symbol: str, period: str = 'daily', days: int = 365) -> pd.DataFrame:
+    """Fetch perpetual-contract closes from Coinalyze on the same bars as the OI history."""
+    try:
+        api_key = get_coinalyze_api_key()
+        if not api_key:
+            return pd.DataFrame()
+        
+        to_time = int(datetime.now().timestamp())
+        from_time = int((datetime.now() - timedelta(days=days)).timestamp())
+        
+        response = requests.get(
+            "https://api.coinalyze.net/v1/ohlcv-history",
+            params={'symbols': convert_symbol_to_coinalyze(symbol), 'interval': period,
+                    'from': from_time, 'to': to_time},
+            headers={'api_key': api_key},
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return pd.DataFrame()
+        
+        data = response.json()
+        if not data or 'history' not in data[0] or not data[0]['history']:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data[0]['history'])
+        df['timestamp'] = pd.to_datetime(df['t'], unit='s')
+        df['close'] = df['c'].astype(float)
+        return df[['timestamp', 'close']]
     except Exception:
         return pd.DataFrame()
 
@@ -356,17 +409,28 @@ def safe_pct_change(current: float, previous: float) -> float:
     return ((current - previous) / previous) * 100
 
 def safe_series_diff(series: pd.Series, lookback: int) -> float:
-    """Safely calculate series difference with lookback."""
+    """Change over the last `lookback` bars, x[t] - x[t-lookback] (same as Series.diff)."""
     if len(series) < lookback + 1:
         return 0.0
     try:
         recent = series.iloc[-1]
-        past = series.iloc[-lookback]
+        past = series.iloc[-1 - lookback]
         if pd.isna(recent) or pd.isna(past):
             return 0.0
         return recent - past
     except (IndexError, KeyError):
         return 0.0
+
+def last_bar_is_forming(df: pd.DataFrame, interval: str) -> bool:
+    """True when the newest bar has not closed yet (today's day / this week).
+
+    Its pattern, phase and signal can still change until the bar closes.
+    """
+    if df.empty:
+        return False
+    bar = pd.Timedelta(days=7 if interval == '1wk' else 1)
+    now = pd.Timestamp.now(tz='UTC').tz_localize(None)
+    return df['timestamp'].iloc[-1] + bar > now
 
 # --- Constants ---
 PATTERN_RANKINGS = {
@@ -462,7 +526,13 @@ def fetch_data(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.Dat
 
 def detect_patterns_optimized(df: pd.DataFrame) -> pd.DataFrame:
     """Vectorized pattern detection using numpy - picks the highest-ranked pattern per bar."""
-    candle_names = talib.get_function_groups()['Pattern Recognition']
+    # Only patterns with a reliability rank are used. The unranked TA-Lib
+    # functions include CDLLONGLINE / CDLSHORTLINE, which only describe candle
+    # length; at rank 999 they still produced ~12% of all buy/sell stars.
+    candle_names = [
+        c for c in talib.get_function_groups()['Pattern Recognition']
+        if f"{c}_Bull" in PATTERN_RANKINGS or f"{c}_Bear" in PATTERN_RANKINGS
+    ]
     op, hi, lo, cl = df['open'].values, df['high'].values, df['low'].values, df['close'].values
     n = len(df)
     num_patterns = len(candle_names)
@@ -517,21 +587,13 @@ def analyze_ad_phase_fast(df: pd.DataFrame, lookback: int = 20) -> tuple:
     choices = ['accumulation', 'distribution', 'uptrend', 'downtrend']
     df['phase'] = np.select(conditions, choices, default='neutral')
     
-    # Current phase
-    if len(df) >= lookback:
-        recent = df.tail(lookback)
-        price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
-        ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
-        
-        if price_change < 0 and ad_change > 0:
-            return "accumulation", "green", df
-        elif price_change > 0 and ad_change < 0:
-            return "distribution", "red", df
-        elif ad_change > 0:
-            return "uptrend", "green", df
-        elif ad_change < 0:
-            return "downtrend", "red", df
-    return "neutral", "gray", df
+    # Current phase = the latest bar's phase, so the headline, the chart zones and
+    # the signals all use the same lookback-bar change. (tail(lookback) spans
+    # only lookback-1 bars and disagreed with the per-bar phase 4-20% of the time.)
+    phase_colors = {'accumulation': 'green', 'uptrend': 'green',
+                    'distribution': 'red', 'downtrend': 'red'}
+    current = df['phase'].iloc[-1] if len(df) > lookback else 'neutral'
+    return current, phase_colors.get(current, 'gray'), df
 
 def detect_wyckoff_enhanced(df: pd.DataFrame, lookback: int = 52) -> dict:
     """
@@ -573,9 +635,9 @@ def detect_wyckoff_enhanced(df: pd.DataFrame, lookback: int = 52) -> dict:
     price_in_lower_quartile = current_price <= q1
     price_in_upper_quartile = current_price >= q3
     
-    # A/D trend
-    ad_trend = recent['ad'].iloc[-1] - recent['ad'].iloc[0] if 'ad' in recent.columns else 0
-    price_trend = recent['close'].iloc[-1] - recent['close'].iloc[0]
+    # A/D and price trend over the same lookback-bar change as the phase
+    ad_trend = safe_series_diff(df['ad'], lookback) if 'ad' in df.columns else 0
+    price_trend = safe_series_diff(df['close'], lookback)
     
     # Volume confirmation
     volume_avg = recent['volume'].mean()
@@ -724,11 +786,15 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     current_price = df['close'].iloc[-1]
     current_date = pd.to_datetime(df['timestamp'].iloc[-1])
     
-    # Calculate data age
+    # Data age = time since the newest bar's period ENDED, in UTC (bar
+    # timestamps are UTC period starts). Measuring from the start made the
+    # live weekly bar look up to 6 days "stale".
     try:
-        now = pd.Timestamp.now(tz=None)
-        data_date = current_date.tz_localize(None) if current_date.tzinfo else current_date
-        data_age_days = (now - data_date).days
+        now = pd.Timestamp.now(tz='UTC').tz_localize(None)
+        data_date = current_date.tz_convert('UTC').tz_localize(None) if current_date.tzinfo else current_date
+        bar = df['timestamp'].diff().tail(20).median()
+        bar_end = data_date + bar if pd.notna(bar) else data_date
+        data_age_days = max(0, (now - bar_end).days)
     except Exception:
         data_age_days = 0
     
@@ -757,12 +823,16 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
         warnings.append(f'90D return based on {abs((current_date - date_90d).days)}D ago (data gaps)')
     ret_90d = safe_pct_change(current_price, price_90d)
     
-    # YTD return
+    # YTD return, measured from the last close of the previous year (the
+    # standard base); the first close of the year skips Jan 1's move.
     current_year = current_date.year
+    prior_year = df[df['timestamp'].dt.year < current_year]
     ytd_data = df[df['timestamp'].dt.year == current_year]
-    if len(ytd_data) > 1:
-        price_ytd_start = ytd_data['close'].iloc[0]
-        ret_ytd = safe_pct_change(current_price, price_ytd_start)
+    if not prior_year.empty:
+        ret_ytd = safe_pct_change(current_price, prior_year['close'].iloc[-1])
+    elif len(ytd_data) > 1:
+        # Listed this year: measure from its first open
+        ret_ytd = safe_pct_change(current_price, ytd_data['open'].iloc[0])
     else:
         ret_ytd = 0
         warnings.append('Insufficient data for YTD calculation')
@@ -808,10 +878,9 @@ def calculate_signal_strength(phase: str, wyckoff: dict, df: pd.DataFrame, lookb
     breakdown['wyckoff'] = wyckoff_score
     
     # A/D momentum score (+/-15)
-    if 'ad' in df.columns and len(df) >= lookback:
-        recent = df.tail(lookback)
-        ad_change = recent['ad'].iloc[-1] - recent['ad'].iloc[0]
-        price_change = recent['close'].iloc[-1] - recent['close'].iloc[0]
+    if 'ad' in df.columns and len(df) > lookback:
+        ad_change = safe_series_diff(df['ad'], lookback)
+        price_change = safe_series_diff(df['close'], lookback)
         
         if price_change < 0 and ad_change > 0:  # Bullish divergence
             ad_score = 15
@@ -895,8 +964,10 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data
         prev_price = df.iloc[-2]['close'] if len(df) > 1 else last_price
         pct_change = safe_pct_change(last_price, prev_price)
         
-        # Performance metrics
-        perf = calculate_performance_metrics(df)
+        # Performance metrics from daily bars: on weekly bars "7D" is really
+        # "since last Sunday" and 30D/90D snap to week boundaries.
+        df_perf = df if interval == '1d' else fetch_data(symbol, '1d', data_source)
+        perf = calculate_performance_metrics(df_perf if not df_perf.empty else df)
         
         # Signal strength
         signal_score, score_breakdown = calculate_signal_strength(phase, wyckoff, df, lookback)
@@ -981,13 +1052,13 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
     factors['phase_alignment'] = phase_align // 2  # store actual contribution to score
     
     # Trend direction (30 points) - check length BEFORE accessing index
-    if len(df_daily) >= 20:
-        daily_trend = 1 if df_daily['close'].iloc[-1] > df_daily['close'].iloc[-20] else -1
+    if len(df_daily) > 20:
+        daily_trend = 1 if safe_series_diff(df_daily['close'], 20) > 0 else -1
     else:
         daily_trend = 0
     
-    if len(df_weekly) >= 10:
-        weekly_trend = 1 if df_weekly['close'].iloc[-1] > df_weekly['close'].iloc[-10] else -1
+    if len(df_weekly) > 10:
+        weekly_trend = 1 if safe_series_diff(df_weekly['close'], 10) > 0 else -1
     else:
         weekly_trend = 0
     
@@ -1190,18 +1261,8 @@ with st.sidebar:
     
     st.caption(f"Current: **{data_source_labels[st.session_state.data_source]}**")
     
-    # Manual cache clearing on data source change
-    if 'previous_data_source' not in st.session_state:
-        st.session_state.previous_data_source = st.session_state.data_source
-    
-    if st.session_state.data_source != st.session_state.previous_data_source:
-        st.cache_data.clear()
-        st.session_state.previous_data_source = st.session_state.data_source
-        st.info("🔄 Cache cleared due to data source change")
-    
-    # Data source recommendation note
     if st.session_state.data_source == 'cryptocompare':
-        st.caption("⚠️ *For Weekly timeframe, Yahoo Finance is recommended (native weekly data)*")
+        st.caption("*Weekly bars are built from daily candles as Monday-Sunday (UTC) weeks, like Yahoo's.*")
     
     st.divider()
     
@@ -1272,11 +1333,19 @@ with st.sidebar:
         refresh_btn = st.button("🔄 Refresh", width='stretch', type="primary")
     
     elif analysis_mode == "🔄 Timeframe Compare":
-        symbol = st.text_input("Symbol", value="BTC-USD").upper()
-        compare_btn = st.button("🔄 Compare", width='stretch', type="primary")
+        symbol_input = st.text_input("Symbol", value="BTC-USD")
+        is_valid, symbol, msg = validate_symbol(symbol_input)
+        if not is_valid and symbol_input:
+            st.error(f"❌ {msg}")
+        symbol = symbol if is_valid else symbol_input.upper()
+        compare_btn = st.button("🔄 Compare", width='stretch', type="primary", disabled=not is_valid)
     
     elif analysis_mode == "📈 Open Interest Monitor":
-        symbol = st.text_input("Symbol", value="BTC-USD", key="oi_symbol").upper()
+        symbol_input = st.text_input("Symbol", value="BTC-USD", key="oi_symbol")
+        is_valid, symbol, msg = validate_symbol(symbol_input)
+        if not is_valid and symbol_input:
+            st.error(f"❌ {msg}")
+        symbol = symbol if is_valid else symbol_input.upper()
         
         # Coinalyze intervals: 1min, 5min, 15min, 30min, 1hour, 2hour, 4hour, 6hour, 12hour, daily
         oi_period = st.selectbox(
@@ -1298,7 +1367,7 @@ with st.sidebar:
         else:
             st.error("❌ COINALYZE_API_KEY not set")
         
-        oi_analyze_btn = st.button("📈 Analyze OI", width='stretch', type="primary")
+        oi_analyze_btn = st.button("📈 Analyze OI", width='stretch', type="primary", disabled=not is_valid)
 
 # --- Main Content ---
 
@@ -1437,17 +1506,25 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         # A/D Chart
         st.subheader("💰 Money Flow (A/D Line)")
         
-        ad_recent = df.tail(lookback_period)
-        ad_trend = ad_recent['ad'].iloc[-1] - ad_recent['ad'].iloc[0]
-        ad_trend_pct = (ad_trend / abs(ad_recent['ad'].iloc[0])) * 100 if ad_recent['ad'].iloc[0] != 0 else 0
+        # Same lookback-bar changes the phase above is based on
+        ad_trend = safe_series_diff(df['ad'], lookback_period)
+        price_chg = safe_series_diff(df['close'], lookback_period)
+        # Net A/D flow divided by the volume traded over the same bars is
+        # Chaikin Money Flow, bounded to [-1, 1]. A % change of the cumulative
+        # A/D level is not meaningful: its zero point is wherever history starts.
+        window_volume = df['volume'].iloc[-lookback_period:].sum() if len(df) > lookback_period else 0
+        cmf = ad_trend / window_volume if window_volume > 0 else 0.0
         
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Trend", f"{'📈 IN' if ad_trend > 0 else '📉 OUT'}")
         with col2:
-            st.metric("A/D Change", f"{ad_trend_pct:+.1f}%")
+            st.metric(
+                f"Money Flow ({lookback_period})", f"{cmf:+.3f}",
+                help="Chaikin Money Flow: net buying (+) or selling (-) pressure as a share of "
+                     "the volume traded over the lookback. Ranges from -1 to +1.",
+            )
         with col3:
-            price_chg = df['close'].iloc[-1] - df['close'].iloc[-lookback_period] if len(df) >= lookback_period else 0
             if price_chg < 0 and ad_trend > 0:
                 st.success("🔍 Bullish Divergence")
             elif price_chg > 0 and ad_trend < 0:
@@ -1483,6 +1560,18 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
             ), width='stretch', hide_index=True)
         else:
             st.info("No signals in visible range")
+        
+        if last_bar_is_forming(df, interval):
+            bar_name = "week" if interval == '1wk' else "day"
+            forming_msg = (
+                f"⏳ The latest {bar_name} (bar of {df['timestamp'].iloc[-1]:%Y-%m-%d}) has not closed yet. "
+                "Its pattern, phase and signal can still change or disappear until it closes; "
+                "signals on closed bars are final."
+            )
+            if df['signal'].iloc[-1] != 'none':
+                st.warning(forming_msg)
+            else:
+                st.caption(forming_msg)
     
     except Exception as e:
         st.error(f"""
@@ -1745,8 +1834,8 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Trend", f"{trend_d['strength']}", delta=f"ADX: {trend_d['adx']:.1f}")
                 
                 # A/D status
-                if 'ad' in df_d.columns and len(df_d) >= 20:
-                    ad_recent = df_d['ad'].iloc[-1] - df_d['ad'].iloc[-20]
+                if 'ad' in df_d.columns and len(df_d) > 20:
+                    ad_recent = safe_series_diff(df_d['ad'], 20)
                     ad_status = "📈 Money Flowing IN" if ad_recent > 0 else "📉 Money Flowing OUT"
                     st.caption(ad_status)
                 
@@ -1763,8 +1852,8 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Trend", f"{trend_w['strength']}", delta=f"ADX: {trend_w['adx']:.1f}")
                 
                 # A/D status
-                if 'ad' in df_w.columns and len(df_w) >= 10:
-                    ad_recent = df_w['ad'].iloc[-1] - df_w['ad'].iloc[-10]
+                if 'ad' in df_w.columns and len(df_w) > 10:
+                    ad_recent = safe_series_diff(df_w['ad'], 10)
                     ad_status = "📈 Money Flowing IN" if ad_recent > 0 else "📉 Money Flowing OUT"
                     st.caption(ad_status)
                 
@@ -1897,6 +1986,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
             oi_history = fetch_open_interest_history(symbol, oi_period, oi_days)
             funding = fetch_funding_rate(symbol)
             ls_ratio = fetch_long_short_ratio(symbol)
+            perp_price = fetch_perp_price_history(symbol, oi_period, oi_days)
             df_price = fetch_data(symbol, '1d', st.session_state.data_source)
         
         # Debug expander - show what was fetched
@@ -1909,6 +1999,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
             with col2:
                 st.write("**L/S Ratio:**", "✅" if not ls_ratio.get('error') else f"❌ {ls_ratio.get('error')}")
                 st.write("**Price Data:**", f"✅ {len(df_price)} rows" if not df_price.empty else "❌ Empty")
+                st.write("**Perp Price:**", f"✅ {len(perp_price)} rows" if not perp_price.empty else "❌ Empty")
                 st.write("**API Key:**", "✅ Set" if get_coinalyze_api_key() else "❌ Not set")
         
         # Check for critical errors
@@ -1920,26 +2011,42 @@ elif analysis_mode == "📈 Open Interest Monitor":
             **Troubleshooting:**
             - Verify `COINALYZE_API_KEY` is set in Streamlit Secrets
             - Check your API key is valid at coinalyze.net
-            - Symbol format: BTC-USD → BTCUSD_PERP.A
+            - Symbol format: BTC-USD → BTCUSDT_PERP.A
             """)
         else:
             # --- CALCULATE ALL METRICS ---
-            current_oi = oi_current.get('oi', 0)
+            current_oi = oi_current.get('oi', 0)  # USD
+            
+            missing = [name for name, failed in (
+                ("OI history", oi_history.empty),
+                ("funding rate", bool(funding.get('error'))),
+                ("long/short ratio", bool(ls_ratio.get('error'))),
+            ) if failed]
+            if missing:
+                st.warning(f"⚠️ Score computed without: {', '.join(missing)} (those factors count as neutral).")
+            
+            # OI (in coins) and perp price on the exact same bars
+            aligned = pd.DataFrame()
+            if not oi_history.empty and not perp_price.empty:
+                aligned = oi_history[['timestamp', 'sumOpenInterest']].merge(perp_price, on='timestamp', how='inner')
             
             # OI change
             oi_change_pct = 0
-            if not oi_history.empty and len(oi_history) >= 2:
+            if len(aligned) >= 2:
+                oi_change_pct = safe_pct_change(aligned['sumOpenInterest'].iloc[-1], aligned['sumOpenInterest'].iloc[0])
+            elif not oi_history.empty and len(oi_history) >= 2:
                 first_oi = oi_history['sumOpenInterest'].iloc[0]
                 last_oi = oi_history['sumOpenInterest'].iloc[-1]
                 oi_change_pct = safe_pct_change(last_oi, first_oi)
             
-            # Price change over the SAME calendar window as the OI history.
-            # Align by timestamp, never by row count: OI bars (4h/daily) and
-            # price bars (daily) have different resolutions.
+            # Price change over the SAME window as the OI change. Prefer the
+            # perp closes on the OI's own bars; otherwise align spot by time,
+            # never by row count (OI bars may be 4h, spot bars are daily).
             price_change_pct = 0
-            current_price = 0
-            if not df_price.empty and len(df_price) >= 2:
-                current_price = df_price['close'].iloc[-1]
+            current_price = df_price['close'].iloc[-1] if not df_price.empty else 0
+            if len(aligned) >= 2:
+                price_change_pct = safe_pct_change(aligned['close'].iloc[-1], aligned['close'].iloc[0])
+            elif not df_price.empty and len(df_price) >= 2:
                 if not oi_history.empty:
                     window_start = oi_history['timestamp'].iloc[0]
                     past = df_price[df_price['timestamp'] <= window_start]
@@ -1992,14 +2099,20 @@ elif analysis_mode == "📈 Open Interest Monitor":
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                # Format OI
-                if current_oi >= 1_000_000:
-                    oi_display = f"{current_oi/1_000_000:.2f}M"
+                # Format OI (USD)
+                if current_oi >= 1_000_000_000:
+                    oi_display = f"${current_oi/1_000_000_000:.2f}B"
+                elif current_oi >= 1_000_000:
+                    oi_display = f"${current_oi/1_000_000:.2f}M"
                 elif current_oi >= 1_000:
-                    oi_display = f"{current_oi/1_000:.2f}K"
+                    oi_display = f"${current_oi/1_000:.2f}K"
                 else:
-                    oi_display = f"{current_oi:.2f}"
-                st.metric("Open Interest", oi_display, delta=f"{oi_change_pct:+.2f}%")
+                    oi_display = f"${current_oi:.2f}"
+                st.metric(
+                    "Open Interest", oi_display, delta=f"{oi_change_pct:+.2f}%",
+                    help="Value in USD. The change is in open contracts (coins) over the selected "
+                         "window, so it reflects positioning rather than price moves.",
+                )
             
             with col2:
                 # Funding rate interpretation (thresholds match calculate_derivatives_score)
@@ -2050,46 +2163,38 @@ elif analysis_mode == "📈 Open Interest Monitor":
             # --- OI vs PRICE CHART WITH SIGNALS ---
             st.markdown("### 📈 Open Interest vs Price (with Historical Signals)")
             
-            if not oi_history.empty and not df_price.empty:
-                # Calculate historical signals for each point
-                oi_history = oi_history.copy()
-                oi_history['oi_pct_change'] = oi_history['sumOpenInterest'].pct_change(periods=5) * 100
+            if not oi_history.empty and not (perp_price.empty and df_price.empty):
+                # OI change and price change over the SAME 5 OI bars. Spot
+                # pct_change(5) on daily bars was 5 days even for 4h OI (20h).
+                sig = oi_history[['timestamp', 'sumOpenInterest']].copy()
+                sig['timestamp'] = sig['timestamp'].astype('datetime64[ns]')
+                if not perp_price.empty:
+                    perp = perp_price.assign(timestamp=perp_price['timestamp'].astype('datetime64[ns]'))
+                    sig = sig.merge(perp, on='timestamp', how='left')
+                    price_line = perp.rename(columns={'close': 'price'})
+                else:
+                    # Spot fallback: pair each OI reading with the last daily
+                    # close already known at that time (no look-ahead into an
+                    # unfinished day).
+                    spot = df_price[['timestamp', 'close']].copy()
+                    spot['timestamp'] = spot['timestamp'].astype('datetime64[ns]')
+                    spot['known_at'] = spot['timestamp'] + pd.Timedelta(days=1)
+                    oi_bar = sig['timestamp'].diff().median()
+                    sig['known_at'] = sig['timestamp'] + (oi_bar if pd.notna(oi_bar) else pd.Timedelta(days=1))
+                    sig = pd.merge_asof(sig.sort_values('known_at'), spot[['known_at', 'close']].sort_values('known_at'),
+                                        on='known_at', direction='backward')
+                    price_line = spot[spot['timestamp'] >= sig['timestamp'].min()].rename(columns={'close': 'price'})
                 
-                # Match price data to OI timeframe
-                oi_start = oi_history['timestamp'].min()
-                df_price_filtered = df_price[df_price['timestamp'] >= oi_start].copy()
+                sig['oi_pct_change'] = sig['sumOpenInterest'].pct_change(periods=5) * 100
+                sig['price_pct_change'] = sig['close'].pct_change(periods=5) * 100
+                sig = sig.dropna(subset=['oi_pct_change', 'price_pct_change'])
                 
-                # Signal markers (initialized unconditionally - used by the chart below)
-                bullish_points = []
-                bearish_points = []
-                weak_points = []
-                cap_points = []
-                
-                # Merge price changes into OI history for signal calculation
-                if not df_price_filtered.empty:
-                    df_price_filtered['price_pct_change'] = df_price_filtered['close'].pct_change(periods=5) * 100
-                    
-                    for _, row in oi_history.iterrows():
-                        oi_chg = row.get('oi_pct_change', 0)
-                        if pd.isna(oi_chg):
-                            continue
-                        
-                        # Find closest price data
-                        ts = row['timestamp']
-                        price_match = df_price_filtered[df_price_filtered['timestamp'] <= ts]
-                        if price_match.empty:
-                            continue
-                        price_chg = price_match['price_pct_change'].iloc[-1] if not pd.isna(price_match['price_pct_change'].iloc[-1]) else 0
-                        
-                        # Apply signal logic
-                        if oi_chg > 0.5 and price_chg > 0.5:
-                            bullish_points.append((ts, row['sumOpenInterest'], 'Bullish'))
-                        elif oi_chg > 0.5 and price_chg < -0.5:
-                            bearish_points.append((ts, row['sumOpenInterest'], 'Bearish'))
-                        elif oi_chg < -0.5 and price_chg > 0.5:
-                            weak_points.append((ts, row['sumOpenInterest'], 'Weak Rally'))
-                        elif oi_chg < -0.5 and price_chg < -0.5:
-                            cap_points.append((ts, row['sumOpenInterest'], 'Capitulation'))
+                oi_up, oi_dn = sig['oi_pct_change'] > 0.5, sig['oi_pct_change'] < -0.5
+                px_up, px_dn = sig['price_pct_change'] > 0.5, sig['price_pct_change'] < -0.5
+                bullish_points = sig[oi_up & px_up]
+                bearish_points = sig[oi_up & px_dn]
+                weak_points = sig[oi_dn & px_up]
+                cap_points = sig[oi_dn & px_dn]
                 
                 # Create chart
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -2108,52 +2213,52 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 )
                 
                 # Price line
-                if not df_price_filtered.empty:
+                if not price_line.empty:
                     fig.add_trace(
                         go.Scatter(
-                            x=df_price_filtered['timestamp'],
-                            y=df_price_filtered['close'],
-                            name="Price",
+                            x=price_line['timestamp'],
+                            y=price_line['price'],
+                            name="Perp Price" if not perp_price.empty else "Price",
                             line=dict(color='#ff9800', width=2)
                         ),
                         secondary_y=True
                     )
                 
                 # Add signal markers
-                if bullish_points:
+                if not bullish_points.empty:
                     fig.add_trace(go.Scatter(
-                        x=[p[0] for p in bullish_points],
-                        y=[p[1] for p in bullish_points],
+                        x=bullish_points['timestamp'],
+                        y=bullish_points['sumOpenInterest'],
                         mode='markers',
                         name='🟢 Bullish',
                         marker=dict(color='lime', size=10, symbol='triangle-up'),
                         hovertemplate='Bullish Signal<extra></extra>'
                     ), secondary_y=False)
                 
-                if bearish_points:
+                if not bearish_points.empty:
                     fig.add_trace(go.Scatter(
-                        x=[p[0] for p in bearish_points],
-                        y=[p[1] for p in bearish_points],
+                        x=bearish_points['timestamp'],
+                        y=bearish_points['sumOpenInterest'],
                         mode='markers',
                         name='🔴 Bearish',
                         marker=dict(color='red', size=10, symbol='triangle-down'),
                         hovertemplate='Bearish Signal<extra></extra>'
                     ), secondary_y=False)
                 
-                if weak_points:
+                if not weak_points.empty:
                     fig.add_trace(go.Scatter(
-                        x=[p[0] for p in weak_points],
-                        y=[p[1] for p in weak_points],
+                        x=weak_points['timestamp'],
+                        y=weak_points['sumOpenInterest'],
                         mode='markers',
                         name='🟡 Weak Rally',
                         marker=dict(color='yellow', size=8, symbol='circle'),
                         hovertemplate='Weak Rally<extra></extra>'
                     ), secondary_y=False)
                 
-                if cap_points:
+                if not cap_points.empty:
                     fig.add_trace(go.Scatter(
-                        x=[p[0] for p in cap_points],
-                        y=[p[1] for p in cap_points],
+                        x=cap_points['timestamp'],
+                        y=cap_points['sumOpenInterest'],
                         mode='markers',
                         name='🟠 Capitulation',
                         marker=dict(color='orange', size=8, symbol='diamond'),
@@ -2166,7 +2271,8 @@ elif analysis_mode == "📈 Open Interest Monitor":
                     hovermode='x unified',
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
-                fig.update_yaxes(title_text="Open Interest", secondary_y=False, tickformat=".2s")
+                oi_unit = convert_symbol_to_coinalyze(symbol).replace('USDT_PERP.A', '')
+                fig.update_yaxes(title_text=f"Open Interest ({oi_unit})", secondary_y=False, tickformat=".2s")
                 fig.update_yaxes(title_text="Price (USD)", secondary_y=True, tickprefix="$")
                 
                 st.plotly_chart(fig, width='stretch', config={'scrollZoom': True})

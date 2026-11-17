@@ -1,0 +1,28 @@
+# Files excluded from the Modal image (dockerignore-style patterns).
+# Referenced explicitly via FilePatternMatcher.from_file() in modal_app.py;
+# Modal does not read this file automatically.
+
+# VCS / CI / editor / agent state
+.git
+.github
+.cursor
+.zcode
+
+# Python build artifacts and local environments
+__pycache__
+*.pyc
+.ruff_cache
+.venv
+venv
+env
+
+# Local data dumps (gitignored, may exist on a dev machine)
+data
+model
+binance
+notebook2
+
+# Never ship local credentials; Modal secrets are injected at runtime
+.env
+.streamlit/secrets.toml
+.streamlit/secrets.*
