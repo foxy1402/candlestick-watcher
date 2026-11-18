@@ -9,6 +9,7 @@ __pycache__/
 *$py.class
 *.so
 .venv
+.venv-*
 venv/
 env/
 ENV/
@@ -16,6 +17,12 @@ ENV/
 # Local secrets / config
 .env
 .streamlit/secrets.toml
+
+# Tests (not needed at runtime)
+tests/
+pytest.ini
+requirements-dev.txt
+.pytest_cache/
 
 # Debug / logs
 *.log

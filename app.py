@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from datetime import datetime, timedelta
+import functools
 import os
 
 # --- Configuration ---
@@ -29,6 +30,47 @@ def get_secret(name: str) -> str:
         pass
     return os.environ.get(name, '')
 
+# --- Caching ---
+class _FailedResult(Exception):
+    """Carries a failed result out of a cached call so Streamlit does not store it."""
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+
+def cache_unless_failed(is_failed, ttl: int = 300):
+    """st.cache_data that returns failed results without caching them.
+
+    A rate limit or network blip would otherwise be served as "no data" for the
+    whole TTL; this way the next request retries the source.
+    """
+    def decorator(fn):
+        def call(*args, **kwargs):
+            result = fn(*args, **kwargs)
+            if is_failed(result):
+                raise _FailedResult(result)
+            return result
+        # Streamlit keys caches by qualname + source, and every `call` has the
+        # same source, so each wrapped function needs its own qualname.
+        call.__qualname__ = f"{fn.__qualname__}.cached"
+        call.__module__ = fn.__module__
+        cached = st.cache_data(ttl=ttl, show_spinner=False)(call)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return cached(*args, **kwargs)
+            except _FailedResult as failure:
+                return failure.result
+        wrapper.clear = cached.clear
+        return wrapper
+    return decorator
+
+def _is_empty(df: pd.DataFrame) -> bool:
+    return df.empty
+
+def _has_error(result: dict) -> bool:
+    return bool(result.get('error'))
+
 # --- Coinalyze API Helper Functions ---
 def get_coinalyze_api_key() -> str:
     """Get Coinalyze API key from Streamlit secrets or environment variable."""
@@ -39,7 +81,7 @@ def get_cryptocompare_api_key() -> str:
     """Get CryptoCompare API key from Streamlit secrets or environment variable."""
     return get_secret('CRYPTOCOMPARE_API_KEY')
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_is_empty)
 def fetch_data_cryptocompare(symbol: str, interval: str) -> pd.DataFrame:
     """Fetch OHLCV data from CryptoCompare API (primary data source), cached."""
     return fetch_data_cryptocompare_raw(symbol, interval)
@@ -112,19 +154,23 @@ def convert_symbol_to_coinalyze(symbol: str) -> str:
     """Convert Yahoo Finance symbol to Coinalyze format.
     BTC-USD -> BTCUSDT_PERP.A (Binance USDT-margined perpetual)
     """
-    base = symbol.upper().split('-')[0]
-    # Strip only the quote suffix; a blanket replace('USD','') would turn
-    # USDC/USDD into "C"/"D" and fetch the wrong perpetual.
-    if base.endswith('USDT'):
-        base = base[:-4]
-    elif base.endswith('USD'):
-        base = base[:-3]
+    symbol = symbol.upper()
+    if '-' in symbol:
+        # The dashed base is already clean. Stripping a "USD" suffix here would
+        # turn TUSD-USD into "T" and fetch a different coin's perpetual.
+        base = symbol.split('-')[0]
+    elif symbol.endswith('USDT'):
+        base = symbol[:-4]
+    elif symbol.endswith('USD'):
+        base = symbol[:-3]
+    else:
+        base = symbol
     # The USDT-margined perpetual is Binance's main market. BTCUSD_PERP.A is the
     # much smaller coin-margined contract, whose positioning can be the exact
     # opposite (e.g. L/S 0.32 there vs 2.90 on USDT on the same day).
     return f"{base}USDT_PERP.A"
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_has_error)
 def fetch_open_interest(symbol: str) -> dict:
     """Fetch current Open Interest from Coinalyze API."""
     try:
@@ -159,12 +205,12 @@ def fetch_open_interest(symbol: str) -> dict:
     except Exception as e:
         return {'error': str(e), 'oi': 0, 'symbol': symbol}
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_is_empty)
 def fetch_open_interest_history(symbol: str, period: str = 'daily', days: int = 365) -> pd.DataFrame:
     """Fetch historical Open Interest data from Coinalyze API.
     
-    Coinalyze supports unlimited history!
-    Intervals: minute, 5minute, 15minute, 30minute, hour, 2hour, 4hour, 6hour, 12hour, daily, weekly
+    Intervals: 1min, 5min, 15min, 30min, 1hour, 2hour, 4hour, 6hour, 12hour, daily.
+    Coinalyze keeps full daily history but only the last 1500-2000 intraday bars.
     """
     try:
         api_key = get_coinalyze_api_key()
@@ -208,7 +254,7 @@ def fetch_open_interest_history(symbol: str, period: str = 'daily', days: int = 
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_is_empty)
 def fetch_perp_price_history(symbol: str, period: str = 'daily', days: int = 365) -> pd.DataFrame:
     """Fetch perpetual-contract closes from Coinalyze on the same bars as the OI history."""
     try:
@@ -240,7 +286,7 @@ def fetch_perp_price_history(symbol: str, period: str = 'daily', days: int = 365
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_has_error)
 def fetch_funding_rate(symbol: str) -> dict:
     """Fetch current funding rate from Coinalyze API."""
     try:
@@ -272,7 +318,7 @@ def fetch_funding_rate(symbol: str) -> dict:
     except Exception as e:
         return {'rate': 0, 'error': str(e)}
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_has_error)
 def fetch_long_short_ratio(symbol: str) -> dict:
     """Fetch long/short ratio from Coinalyze API."""
     try:
@@ -327,19 +373,22 @@ def calculate_derivatives_score(oi_change: float, funding_rate: float, long_shor
     score = 50  # Start neutral
     factors = []
     
-    # OI Trend (+/- 20 points)
-    if oi_change > 1:
-        score += 15
-        factors.append(('OI Rising', '+15', 'green'))
-    elif oi_change > 0:
-        score += 5
-        factors.append(('OI Slightly Up', '+5', 'green'))
-    elif oi_change < -1:
-        score -= 15
-        factors.append(('OI Falling', '-15', 'red'))
-    elif oi_change < 0:
+    # OI + price regime (+/-20 points), scored together as in the guide table.
+    # Rising OI is only bullish when price rises with it; the same OI rise on a
+    # falling price is shorts building. Moves within +/-1% count as flat.
+    oi_up, oi_down = oi_change > 1, oi_change < -1
+    price_up, price_down = price_change > 1, price_change < -1
+    if oi_up and price_up:
+        score += 20
+        factors.append(('New Longs (OI↑ Price↑)', '+20', 'green'))
+    elif oi_up and price_down:
+        score -= 20
+        factors.append(('Short Buildup (OI↑ Price↓)', '-20', 'red'))
+    elif oi_down and price_up:
+        factors.append(('Short Covering (OI↓ Price↑)', '+0', 'orange'))
+    elif oi_down and price_down:
         score -= 5
-        factors.append(('OI Slightly Down', '-5', 'red'))
+        factors.append(('Capitulation (OI↓ Price↓)', '-5', 'orange'))
     
     # Funding Rate (+/- 15 points) - Negative funding = bullish for longs
     if funding_rate < -0.01:  # Very negative = shorts paying longs
@@ -368,14 +417,6 @@ def calculate_derivatives_score(oi_change: float, funding_rate: float, long_shor
     elif long_short_ratio > 1.2:
         score -= 5
         factors.append(('Long Bias', '-5', 'orange'))
-    
-    # Price trend alignment (+/- 10 points)
-    if oi_change > 0 and price_change > 0:
-        score += 10
-        factors.append(('Trend Confirmed', '+10', 'green'))
-    elif oi_change > 0 and price_change < 0:
-        score -= 10
-        factors.append(('Bearish Divergence', '-10', 'red'))
     
     # Clamp score
     score = max(0, min(100, score))
@@ -407,6 +448,21 @@ def safe_pct_change(current: float, previous: float) -> float:
     if abs(previous) < 1e-10:
         return 0.0
     return ((current - previous) / previous) * 100
+
+def format_price(value) -> str:
+    """USD price with enough decimals for sub-dollar coins (4 significant digits below $1)."""
+    if value is None or pd.isna(value) or not np.isfinite(value) or value <= 0:
+        return "N/A"
+    if value >= 1:
+        return f"${value:,.2f}"
+    decimals = min(12, 3 - int(np.floor(np.log10(value))))
+    return f"${value:.{decimals}f}"
+
+def format_pct(value, decimals: int = 1) -> str:
+    """Signed percentage, or N/A when the value could not be computed."""
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{value:+.{decimals}f}%"
 
 def safe_series_diff(series: pd.Series, lookback: int) -> float:
     """Change over the last `lookback` bars, x[t] - x[t-lookback] (same as Series.diff)."""
@@ -466,7 +522,7 @@ PATTERN_RANKINGS = {
 
 # --- Optimized Functions ---
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_is_empty)
 def fetch_data_yfinance(symbol: str, interval: str) -> pd.DataFrame:
     """Fetch OHLCV data from Yahoo Finance (yfinance), cached."""
     return fetch_data_yfinance_raw(symbol, interval)
@@ -504,7 +560,7 @@ def fetch_data_yfinance_raw(symbol: str, interval: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(_is_empty)
 def fetch_data(symbol: str, interval: str, data_source: str = 'yahoo') -> pd.DataFrame:
     """
     Fetch OHLCV data based on selected data source, with fallback to the other source.
@@ -602,7 +658,8 @@ def detect_wyckoff_enhanced(df: pd.DataFrame, lookback: int = 52) -> dict:
     Returns:
         dict with phase, emoji, label, description, color, and confidence
     """
-    if len(df) < lookback:
+    # The A/D and price trends are lookback-bar changes, which need lookback+1 bars
+    if len(df) <= lookback:
         return {
             "phase": "Insufficient Data", 
             "emoji": "⚪", 
@@ -736,26 +793,29 @@ def generate_signals_fast(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def get_phase_zones_fast(df: pd.DataFrame) -> list:
-    """Optimized zone detection using numpy."""
+    """Accumulation/distribution runs as {'phase', 'start', 'end'} time spans."""
     if df.empty or 'phase' not in df.columns:
         return []
     
     # Group consecutive same-phase runs on the FULL frame first; grouping after
     # filtering would merge zones across interruptions of other phases.
-    df_grouped = df.copy()
-    df_grouped['group'] = (df_grouped['phase'] != df_grouped['phase'].shift()).cumsum()
+    frame = pd.DataFrame({'phase': df['phase'].to_numpy(), 'start': df['timestamp'].to_numpy()})
+    # A zone spans its bars' whole periods, ending where the next bar starts.
+    # Ending at the last bar's start left that bar uncovered and made one-bar
+    # zones zero-width (invisible).
+    step = frame['start'].diff().median()
+    frame['end'] = frame['start'].shift(-1)
+    frame.loc[frame.index[-1], 'end'] = frame['start'].iloc[-1] + (step if pd.notna(step) else pd.Timedelta(0))
+    frame['group'] = (frame['phase'] != frame['phase'].shift()).cumsum()
     
     zones = []
-    for _, group in df_grouped.groupby('group'):
-        if group['phase'].iloc[0] not in ('accumulation', 'distribution'):
+    for _, run in frame.groupby('group', sort=False):
+        phase = run['phase'].iloc[0]
+        if phase not in ('accumulation', 'distribution'):
             continue
-        zones.append({
-            'phase': group['phase'].iloc[0],
-            'start': group['timestamp'].iloc[0],
-            'end': group['timestamp'].iloc[-1],
-        })
+        zones.append({'phase': phase, 'start': run['start'].iloc[0], 'end': run['end'].iloc[-1]})
     
-    return zones  # Return all zones
+    return zones
 
 def find_closest_price(df: pd.DataFrame, target_date: pd.Timestamp, current_price: float) -> tuple:
     """Find price closest to target date, return (price, actual_date)."""
@@ -774,9 +834,13 @@ def find_closest_price(df: pd.DataFrame, target_date: pd.Timestamp, current_pric
     return closest_price, actual_date
 
 def calculate_performance_metrics(df: pd.DataFrame) -> dict:
-    """Calculate multi-period performance returns using closest timestamp matching."""
+    """Multi-period % returns using closest-timestamp matching.
+
+    A return is None when no bar lies close enough to its start date (history
+    too short or a data gap), rather than a shorter period's return mislabelled.
+    """
     if df.empty or len(df) < 2:
-        return {'7d': 0, '30d': 0, '90d': 0, 'ytd': 0, 'data_age_days': 999, 
+        return {'7d': None, '30d': None, '90d': None, 'ytd': None, 'data_age_days': 999, 
                 'warnings': ['Insufficient data']}
     
     if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
@@ -802,26 +866,18 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     if data_age_days > 1:
         warnings.append(f'Data is {data_age_days} days old')
     
-    # 7D return with closest matching
-    target_7d = current_date - pd.Timedelta(days=7)
-    price_7d, date_7d = find_closest_price(df, target_7d, current_price)
-    if abs((date_7d - target_7d).days) > 2:  # More than 2 days off target
-        warnings.append(f'7D return based on {abs((current_date - date_7d).days)}D ago (data gaps)')
-    ret_7d = safe_pct_change(current_price, price_7d)
+    def period_return(days: int, tolerance_days: int):
+        target = current_date - pd.Timedelta(days=days)
+        price, date = find_closest_price(df, target, current_price)
+        if abs(date - target) > pd.Timedelta(days=tolerance_days):
+            warnings.append(f'{days}D return unavailable: no bar within {tolerance_days} days of '
+                            f'{target:%Y-%m-%d} (history starts {df["timestamp"].iloc[0]:%Y-%m-%d})')
+            return None
+        return safe_pct_change(current_price, price)
     
-    # 30D return
-    target_30d = current_date - pd.Timedelta(days=30)
-    price_30d, date_30d = find_closest_price(df, target_30d, current_price)
-    if abs((date_30d - target_30d).days) > 5:
-        warnings.append(f'30D return based on {abs((current_date - date_30d).days)}D ago (data gaps)')
-    ret_30d = safe_pct_change(current_price, price_30d)
-    
-    # 90D return
-    target_90d = current_date - pd.Timedelta(days=90)
-    price_90d, date_90d = find_closest_price(df, target_90d, current_price)
-    if abs((date_90d - target_90d).days) > 10:
-        warnings.append(f'90D return based on {abs((current_date - date_90d).days)}D ago (data gaps)')
-    ret_90d = safe_pct_change(current_price, price_90d)
+    ret_7d = period_return(7, 2)
+    ret_30d = period_return(30, 5)
+    ret_90d = period_return(90, 10)
     
     # YTD return, measured from the last close of the previous year (the
     # standard base); the first close of the year skips Jan 1's move.
@@ -833,8 +889,9 @@ def calculate_performance_metrics(df: pd.DataFrame) -> dict:
     elif len(ytd_data) > 1:
         # Listed this year: measure from its first open
         ret_ytd = safe_pct_change(current_price, ytd_data['open'].iloc[0])
+        warnings.append(f'YTD return measured since listing ({ytd_data["timestamp"].iloc[0]:%Y-%m-%d})')
     else:
-        ret_ytd = 0
+        ret_ytd = None
         warnings.append('Insufficient data for YTD calculation')
     
     return {
@@ -877,18 +934,14 @@ def calculate_signal_strength(phase: str, wyckoff: dict, df: pd.DataFrame, lookb
     score += wyckoff_score
     breakdown['wyckoff'] = wyckoff_score
     
-    # A/D momentum score (+/-15)
-    if 'ad' in df.columns and len(df) > lookback:
-        ad_change = safe_series_diff(df['ad'], lookback)
-        price_change = safe_series_diff(df['close'], lookback)
-        
-        if price_change < 0 and ad_change > 0:  # Bullish divergence
-            ad_score = 15
-        elif price_change > 0 and ad_change < 0:  # Bearish divergence
-            ad_score = -15
-        elif ad_change > 0:
+    # A/D momentum (+/-10): A/D line vs its 21-bar EMA, the crossover drawn on
+    # the Money Flow chart. (The lookback-bar A/D vs price change is already the
+    # phase above; scoring it again counted the same reading twice.)
+    if 'ad' in df.columns and 'ad_ema' in df.columns:
+        ad_last, ema_last = df['ad'].iloc[-1], df['ad_ema'].iloc[-1]
+        if ad_last > ema_last:
             ad_score = 10
-        elif ad_change < 0:
+        elif ad_last < ema_last:
             ad_score = -10
         else:
             ad_score = 0
@@ -923,17 +976,18 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
     high = recent['high'].max()
     low = recent['low'].min()
     
-    # Simple pivot points
+    # Simple pivot points (resistance1 - support1 = high - low, so never inverted)
     pivot = (high + low + current_price) / 3
     support1 = 2 * pivot - high
     resistance1 = 2 * pivot - low
     
-    # Ensure support < resistance (can be inverted in volatile markets)
-    if support1 > resistance1:
-        support1, resistance1 = resistance1, support1
+    # After a deep drawdown S1 = (2*low + 2*close - high) / 3 drops to or below
+    # zero, which is not a price. Report it as unavailable (0) instead.
+    if support1 <= 0:
+        return {'support': 0, 'resistance': resistance1, 'entry_low': 0, 'entry_high': 0, 'pivot': pivot}
     
     # Entry zone (around support)
-    entry_low = max(0, support1)  # Ensure non-negative
+    entry_low = support1
     entry_high = support1 + (pivot - support1) * 0.3
     
     return {
@@ -944,7 +998,7 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 52) -> dict:
         'pivot': pivot
     }
 
-@st.cache_data(ttl=300, show_spinner=False)
+@cache_unless_failed(lambda status: status.get('action') in ('NO DATA', 'ERROR'))
 def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data_source: str = 'yahoo') -> dict:
     """Fetch comprehensive investment data for a single symbol."""
     try:
@@ -953,7 +1007,7 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data
             return {
                 'symbol': symbol, 'status': '❓', 'phase': 'No Data', 
                 'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❓',
-                '7d': 0, '30d': 0, '90d': 0, 'ytd': 0,
+                '7d': None, '30d': None, '90d': None, 'ytd': None,
                 'signal_score': 0, 'levels': {}, 'action': 'NO DATA'
             }
         
@@ -1011,7 +1065,7 @@ def fetch_symbol_status_enhanced(symbol: str, interval: str, lookback: int, data
         return {
             'symbol': symbol, 'status': '❌', 'phase': 'Error', 
             'price': 0, 'change': 0, 'wyckoff': 'N/A', 'wyckoff_emoji': '❌',
-            '7d': 0, '30d': 0, '90d': 0, 'ytd': 0,
+            '7d': None, '30d': None, '90d': None, 'ytd': None,
             'signal_score': 0, 'levels': {}, 'action': 'ERROR'
         }
 
@@ -1051,16 +1105,9 @@ def calculate_mtf_alignment(df_daily: pd.DataFrame, df_weekly: pd.DataFrame) -> 
     score += phase_align // 2
     factors['phase_alignment'] = phase_align // 2  # store actual contribution to score
     
-    # Trend direction (30 points) - check length BEFORE accessing index
-    if len(df_daily) > 20:
-        daily_trend = 1 if safe_series_diff(df_daily['close'], 20) > 0 else -1
-    else:
-        daily_trend = 0
-    
-    if len(df_weekly) > 10:
-        weekly_trend = 1 if safe_series_diff(df_weekly['close'], 10) > 0 else -1
-    else:
-        weekly_trend = 0
+    # Trend direction (30 points): sign of the close change, 0 when flat or too short
+    daily_trend = int(np.sign(safe_series_diff(df_daily['close'], 20)))
+    weekly_trend = int(np.sign(safe_series_diff(df_weekly['close'], 10)))
     
     if daily_trend == weekly_trend == 1:
         trend_align = 30
@@ -1127,13 +1174,13 @@ def calculate_trend_strength_adx(df: pd.DataFrame, period: int = 14) -> dict:
         current_plus = plus_di[-1] if not np.isnan(plus_di[-1]) else 0
         current_minus = minus_di[-1] if not np.isnan(minus_di[-1]) else 0
         
-        # Trend strength
+        # Trend strength. ADX has no direction, so the labels must not imply one.
         if current_adx >= 50:
             strength = '🔥 VERY STRONG'
         elif current_adx >= 25:
-            strength = '📈 STRONG'
+            strength = '💪 STRONG'
         elif current_adx >= 20:
-            strength = '↗️ MODERATE'
+            strength = 'MODERATE'
         else:
             strength = '↔️ WEAK/RANGING'
         
@@ -1166,13 +1213,17 @@ def validate_symbol(symbol: str) -> tuple:
     if len(symbol) < 3 or len(symbol) > 20:
         return False, symbol, "Symbol must be 3-20 characters"
     
+    def valid_base(base: str) -> bool:
+        # Letters and digits (1INCH, UNI7083), but at least one letter
+        return base.isascii() and base.isalnum() and any(c.isalpha() for c in base)
+    
     # Check format
     if '-' in symbol:
         parts = symbol.split('-')
         if len(parts) != 2:
             return False, symbol, "Use format: BTC-USD"
-        if not parts[0].isalpha():
-            return False, symbol, "Base symbol must be letters only"
+        if not valid_base(parts[0]):
+            return False, symbol, "Base symbol must be letters and digits only"
         if parts[1] != 'USD':
             return False, symbol, "Use format: BTC-USD (only USD quote supported)"
     else:
@@ -1182,7 +1233,7 @@ def validate_symbol(symbol: str) -> tuple:
             base = symbol[:-3]
         else:
             return False, symbol, "Use format: BTC-USD or BTCUSDT"
-        if not base or not base.isalpha():
+        if not valid_base(base):
             return False, symbol, "Invalid symbol format"
     
     return True, symbol, ""
@@ -1430,7 +1481,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         pct_change = safe_pct_change(last['close'], prev['close'])
         
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric(f"{symbol}", f"${last['close']:,.2f}", f"{pct_change:+.2f}%")
+        col1.metric(f"{symbol}", format_price(last['close']), f"{pct_change:+.2f}%")
         col2.metric("Phase", phase.title())
         col3.metric("Wyckoff", wyckoff['phase'])
         col4.metric("Outlook", wyckoff['label'])
@@ -1452,7 +1503,8 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         # the full history; this caps the bars sent to the browser.
         plot_df = df if chart_bars == "All" else df.tail(int(chart_bars))
         window_start = plot_df['timestamp'].iloc[0]
-        visible_zones = [z for z in zones if z['end'] >= window_start]
+        # Clip zones to the window so one that began earlier cannot widen the x-axis
+        visible_zones = [{**z, 'start': max(z['start'], window_start)} for z in zones if z['end'] > window_start]
 
         if chart_bars != "All":
             st.caption(f"Showing the last {len(plot_df):,} of {len(df):,} bars. Analysis uses the full history.")
@@ -1517,7 +1569,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Trend", f"{'📈 IN' if ad_trend > 0 else '📉 OUT'}")
+            st.metric("Trend", '📈 IN' if ad_trend > 0 else '📉 OUT' if ad_trend < 0 else '➖ FLAT')
         with col2:
             st.metric(
                 f"Money Flow ({lookback_period})", f"{cmf:+.3f}",
@@ -1559,7 +1611,7 @@ if analysis_mode == "📊 Single Asset" and 'analyze_btn' in dir() and analyze_b
                 columns={'timestamp': 'Date', 'close': 'Price', 'candlestick_pattern': 'Pattern', 'phase': 'Phase', 'signal_strength': 'Signal'}
             ), width='stretch', hide_index=True)
         else:
-            st.info("No signals in visible range")
+            st.info("No buy/sell signals in the full history")
         
         if last_bar_is_forming(df, interval):
             bar_name = "week" if interval == '1wk' else "day"
@@ -1608,8 +1660,8 @@ elif analysis_mode == "📋 Watchlist Dashboard":
         # Find distribution alerts
         distrib_assets = [d for d in data if d['phase'] == 'Distribution']
         
-        # Find top performer (best 30D return)
-        valid_data = [d for d in data if d['price'] > 0]
+        # Find top performer (best 30D return among assets where it could be measured)
+        valid_data = [d for d in data if d['price'] > 0 and d['30d'] is not None]
         top_performer = max(valid_data, key=lambda x: x['30d']) if valid_data else None
         
         col1, col2, col3 = st.columns(3)
@@ -1637,15 +1689,14 @@ elif analysis_mode == "📋 Watchlist Dashboard":
                 st.success("✅ No distribution alerts")
         
         with col3:
-            if top_performer and top_performer['30d'] != 0:
-                color = "green" if top_performer['30d'] > 0 else "red"
+            if top_performer:
                 st.info(f"""
                 📈 **Top 30D Performer**  
                 **{top_performer['symbol']}**  
-                {top_performer['30d']:+.1f}%
+                {format_pct(top_performer['30d'])}
                 """)
             else:
-                st.info("📈 Performance data loading...")
+                st.info("📈 No 30D performance data available")
         
         st.divider()
         
@@ -1675,7 +1726,7 @@ elif analysis_mode == "📋 Watchlist Dashboard":
             
             table_data.append({
                 'Asset': f"{item['status']} {item['symbol']}",
-                'Price': f"${item['price']:,.2f}" if item['price'] > 0 else "N/A",
+                'Price': format_price(item['price']),
                 '7D': item['7d'],
                 '30D': item['30d'],
                 '90D': item['90d'],
@@ -1683,8 +1734,8 @@ elif analysis_mode == "📋 Watchlist Dashboard":
                 'Phase': item['phase'],
                 'Score': item['signal_score'],
                 'Action': item['action'],
-                'Support': f"${support:,.0f}" if support > 0 else "-",
-                'Resistance': f"${resistance:,.0f}" if resistance > 0 else "-"
+                'Support': format_price(support),
+                'Resistance': format_price(resistance)
             })
         
         df_table = pd.DataFrame(table_data)
@@ -1724,10 +1775,10 @@ elif analysis_mode == "📋 Watchlist Dashboard":
                 with col1:
                     st.markdown("**📈 Performance**")
                     metrics = f"""
-                    - 7D: {item['7d']:+.1f}%
-                    - 30D: {item['30d']:+.1f}%
-                    - 90D: {item['90d']:+.1f}%
-                    - YTD: {item['ytd']:+.1f}%
+                    - 7D: {format_pct(item['7d'])}
+                    - 30D: {format_pct(item['30d'])}
+                    - 90D: {format_pct(item['90d'])}
+                    - YTD: {format_pct(item['ytd'])}
                     """
                     st.markdown(metrics)
                 
@@ -1738,15 +1789,24 @@ elif analysis_mode == "📋 Watchlist Dashboard":
                     - Wyckoff: {item['wyckoff_emoji']} {item['wyckoff']}
                     - {item.get('wyckoff_desc', '')}
                     """)
+                    breakdown = item.get('score_breakdown', {})
+                    if breakdown:
+                        labels = {'phase': 'Phase', 'wyckoff': 'Wyckoff',
+                                  'ad_momentum': 'A/D vs EMA', 'trend': 'vs 20-bar SMA'}
+                        parts = [f"{labels.get(k, k)} {v:+d}" for k, v in breakdown.items()]
+                        st.caption("Score = 50 " + " · ".join(parts) + " (clamped to 0-100)")
                 
                 with col3:
                     levels = item.get('levels', {})
                     if levels:
+                        entry_low, entry_high = levels.get('entry_low', 0), levels.get('entry_high', 0)
+                        entry = (f"{format_price(entry_low)} - {format_price(entry_high)}"
+                                 if entry_low > 0 else "N/A (no valid support)")
                         st.markdown("**🎯 Key Levels**")
                         st.markdown(f"""
-                        - Support: ${levels.get('support', 0):,.2f}
-                        - Resistance: ${levels.get('resistance', 0):,.2f}
-                        - Entry Zone: ${levels.get('entry_low', 0):,.2f} - ${levels.get('entry_high', 0):,.2f}
+                        - Support: {format_price(levels.get('support', 0))}
+                        - Resistance: {format_price(levels.get('resistance', 0))}
+                        - Entry Zone: {entry}
                         """)
         
         # --- LEGEND ---
@@ -1760,7 +1820,10 @@ elif analysis_mode == "📋 Watchlist Dashboard":
             | 20-39 | 🟠 CAUTION | Unfavorable signals |
             | 0-19 | 🔴 AVOID | Distribution + Bearish signals |
             
-            **Factors considered:** Phase, Wyckoff, A/D Momentum, Trend Position
+            **Score:** starts at 50, then Phase (±25), Wyckoff (±20), A/D line vs its
+            21-bar EMA (±10) and price more than 5% above/below its 20-bar average (±10),
+            clamped to 0-100.
+            Computed on weekly bars with a 52-week lookback.
             """)
     else:
         st.info("👆 Click 'Refresh' to load data")
@@ -1831,7 +1894,7 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Phase", f"{phase_color} {phase_d.title()}")
                 
                 # Trend strength
-                st.metric("Trend", f"{trend_d['strength']}", delta=f"ADX: {trend_d['adx']:.1f}")
+                st.metric("Trend", f"{trend_d['strength']}", delta=f"ADX {trend_d['adx']:.1f} · {trend_d['direction']}", delta_color="off", help="ADX measures trend strength only. Direction comes from +DI vs -DI.")
                 
                 # A/D status
                 if 'ad' in df_d.columns and len(df_d) > 20:
@@ -1849,7 +1912,7 @@ elif analysis_mode == "🔄 Timeframe Compare":
                 st.metric("Phase", f"{phase_color} {phase_w.title()}")
                 
                 # Trend strength
-                st.metric("Trend", f"{trend_w['strength']}", delta=f"ADX: {trend_w['adx']:.1f}")
+                st.metric("Trend", f"{trend_w['strength']}", delta=f"ADX {trend_w['adx']:.1f} · {trend_w['direction']}", delta_color="off", help="ADX measures trend strength only. Direction comes from +DI vs -DI.")
                 
                 # A/D status
                 if 'ad' in df_w.columns and len(df_w) > 10:
@@ -1867,21 +1930,27 @@ elif analysis_mode == "🔄 Timeframe Compare":
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Current Price", f"${current_price:,.2f}")
+                st.metric("Current Price", format_price(current_price))
             
             with col2:
                 support = levels.get('support', 0)
-                distance_to_support = ((current_price - support) / current_price) * 100 if support > 0 else 0
-                st.metric("Strong Support", f"${support:,.2f}", delta=f"{distance_to_support:+.1f}% away")
+                if support > 0:
+                    distance_to_support = safe_pct_change(support, current_price)
+                    st.metric("Support (S1)", format_price(support), delta=f"{distance_to_support:+.1f}% from price",
+                              delta_color="off")
+                else:
+                    st.metric("Support (S1)", "N/A", help="Pivot support is at or below zero after a deep "
+                              "drawdown, so it is not a usable price level.")
             
             with col3:
                 resistance = levels.get('resistance', 0)
-                distance_to_resistance = ((resistance - current_price) / current_price) * 100 if resistance > 0 else 0
-                st.metric("Resistance", f"${resistance:,.2f}", delta=f"{distance_to_resistance:+.1f}% away")
+                distance_to_resistance = safe_pct_change(resistance, current_price) if resistance > 0 else 0
+                st.metric("Resistance (R1)", format_price(resistance), delta=f"{distance_to_resistance:+.1f}% from price",
+                          delta_color="off")
             
             with col4:
                 pivot = levels.get('pivot', 0)
-                st.metric("Pivot", f"${pivot:,.2f}")
+                st.metric("Pivot", format_price(pivot))
             
             # Entry zone recommendation
             entry_low = levels.get('entry_low', 0)
@@ -1889,9 +1958,15 @@ elif analysis_mode == "🔄 Timeframe Compare":
             
             if score >= 60 and entry_low > 0:
                 st.success(f"""
-                **🎯 Optimal Entry Zone:** ${entry_low:,.2f} - ${entry_high:,.2f}
+                **🎯 Optimal Entry Zone:** {format_price(entry_low)} - {format_price(entry_high)}
                 
                 *Strategy: Consider DCA (Dollar Cost Averaging) if price enters this zone*
+                """)
+            elif score >= 60:
+                st.info("""
+                **🎯 Favorable alignment, but no entry zone**
+                
+                *The pivot support is not a valid price after the recent drawdown, so no entry zone can be computed.*
                 """)
             elif score >= 40:
                 st.info("""
@@ -2100,7 +2175,9 @@ elif analysis_mode == "📈 Open Interest Monitor":
             
             with col1:
                 # Format OI (USD)
-                if current_oi >= 1_000_000_000:
+                if oi_current.get('error') or current_oi <= 0:
+                    oi_display = "N/A"
+                elif current_oi >= 1_000_000_000:
                     oi_display = f"${current_oi/1_000_000_000:.2f}B"
                 elif current_oi >= 1_000_000:
                     oi_display = f"${current_oi/1_000_000:.2f}M"
@@ -2109,14 +2186,17 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 else:
                     oi_display = f"${current_oi:.2f}"
                 st.metric(
-                    "Open Interest", oi_display, delta=f"{oi_change_pct:+.2f}%",
+                    "Open Interest", oi_display,
+                    delta=f"{oi_change_pct:+.2f}%" if not oi_history.empty else None,
                     help="Value in USD. The change is in open contracts (coins) over the selected "
                          "window, so it reflects positioning rather than price moves.",
                 )
             
             with col2:
                 # Funding rate interpretation (thresholds match calculate_derivatives_score)
-                if funding_rate < -0.01:
+                if funding.get('error'):
+                    funding_label = "N/A"
+                elif funding_rate < -0.01:
                     funding_label = f"{funding_rate:.4f}% 🟢"
                 elif funding_rate > 0.05:
                     funding_label = f"{funding_rate:.4f}% 🔴"
@@ -2124,11 +2204,15 @@ elif analysis_mode == "📈 Open Interest Monitor":
                     funding_label = f"{funding_rate:.4f}% 🟠"
                 else:
                     funding_label = f"{funding_rate:.4f}%"
-                st.metric("Funding Rate", funding_label)
+                st.metric("Funding Rate", funding_label,
+                          help="Per funding interval (8h on most Binance perps). "
+                               "0.01% is the usual baseline; negative means shorts pay longs.")
             
             with col3:
                 # Long/Short interpretation
-                if ratio_value > 1.2:
+                if ls_ratio.get('error'):
+                    ls_label = "N/A"
+                elif ratio_value > 1.2:
                     ls_label = f"{ratio_value:.2f} (🐂 Longs)"
                 elif ratio_value < 0.8:
                     ls_label = f"{ratio_value:.2f} (🐻 Shorts)"
@@ -2137,7 +2221,8 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 st.metric("Long/Short Ratio", ls_label)
             
             with col4:
-                st.metric("Price", f"${current_price:,.2f}" if current_price > 0 else "N/A", delta=f"{price_change_pct:+.1f}%")
+                st.metric("Price", format_price(current_price), delta=f"{price_change_pct:+.1f}%",
+                          help="Latest spot price. The change is over the same window as the OI change.")
             
             st.divider()
             
@@ -2305,12 +2390,15 @@ elif analysis_mode == "📈 Open Interest Monitor":
                 st.markdown("""
                 **Open Interest (OI)** = Total outstanding futures contracts
                 
-                | OI Change | Price Change | Signal | Meaning |
-                |-----------|-------------|--------|---------|
-                | ↑ Rising | ↑ Rising | 🟢 **Bullish** | New money entering, trend strengthening |
-                | ↑ Rising | ↓ Falling | 🔴 **Bearish** | Short sellers entering aggressively |
-                | ↓ Falling | ↑ Rising | 🟡 **Weak Rally** | Short covering, may not sustain |
-                | ↓ Falling | ↓ Falling | 🟠 **Capitulation** | Liquidations, potential bottom |
+                | OI Change | Price Change | Signal | Meaning | Score |
+                |-----------|-------------|--------|---------|-------|
+                | ↑ Rising | ↑ Rising | 🟢 **Bullish** | New money entering, trend strengthening | +20 |
+                | ↑ Rising | ↓ Falling | 🔴 **Bearish** | Short sellers entering aggressively | -20 |
+                | ↓ Falling | ↑ Rising | 🟡 **Weak Rally** | Short covering, may not sustain | 0 |
+                | ↓ Falling | ↓ Falling | 🟠 **Capitulation** | Liquidations, potential bottom | -5 |
+                
+                Changes within ±1% count as flat (no score). The Investment Score starts at 50 and
+                adds this, funding rate (±15) and long/short ratio (±15), so it spans 0-100.
                 
                 **For Long-Term Investors:**
                 - 🟢 STRONG TREND = Favorable for holding/adding
@@ -2323,7 +2411,7 @@ elif analysis_mode == "📈 Open Interest Monitor":
         👆 **Configure settings and click 'Analyze OI'**
         
         📊 **What you'll see:**
-        - Current Open Interest and trend (up to 2 years history!)
+        - Current Open Interest and trend (up to 1 year of daily history)
         - Funding rate and Long/Short ratio
         - Investment advisory signals
         

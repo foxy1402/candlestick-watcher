@@ -13,7 +13,7 @@ A **Streamlit web application** for long-term crypto investors. Analyzes market 
 |---------|-------------|
 | **📋 Watchlist Dashboard** | Monitor multiple assets at a glance with A/D status |
 | **🟢 Phase Zones** | Shaded chart areas showing Accumulation/Distribution periods |
-| **🛒 Simplified Wyckoff** | Beginner-friendly labels: "Smart Money Buying/Selling" |
+| **🛒 Simplified Wyckoff** | Accumulation / Markup / Distribution / Markdown / Ranging, from A/D flow and price position |
 | **⭐ Entry Signals** | Strong Buy/Sell when A/D + Pattern align |
 | **🔄 Timeframe Compare** | Daily vs Weekly alignment check |
 | **50+ Patterns** | Hammer, Doji, Engulfing, Morning Star, and more |
@@ -39,6 +39,37 @@ Analyze futures market data for smarter investment decisions:
 | ↓ Falling | ↑ Rising | 🟡 Weak Rally | Short covering, may not sustain |
 | ↓ Falling | ↓ Falling | 🟠 Capitulation | Liquidations, potential bottom |
 
+A change counts as rising/falling only when it is larger than ±1% over the
+selected window; smaller moves are treated as flat and add nothing to the score.
+
+### How the scores are calculated
+
+**Investment Score (Open Interest Monitor)** starts at 50:
+
+| Component | Points |
+|-----------|--------|
+| OI/price regime | New longs +20 · Short buildup −20 · Short covering 0 · Capitulation −5 |
+| Funding rate (per interval) | below −0.01% +15 · −0.01% to 0% +5 · 0% to 0.01% 0 · 0.01% to 0.05% −5 · above 0.05% −15 |
+| Long/Short ratio | below 0.8 +15 · 0.8 to 1.0 +5 · 1.0 to 1.2 0 · 1.2 to 1.5 −5 · above 1.5 −15 |
+
+The total therefore always lies between 0 and 100.
+
+**Signal Score (Watchlist)** is computed on weekly bars with a 52-week lookback.
+It starts at 50 and is clamped to 0–100:
+
+| Component | Points |
+|-----------|--------|
+| A/D phase | Accumulation +25 · Uptrend +15 · Neutral 0 · Downtrend −15 · Distribution −25 |
+| Wyckoff phase | Accumulation +20 · Markup +15 · Ranging 0 · Markdown −15 · Distribution −20 |
+| A/D line vs its 21-bar EMA | above +10 · below −10 |
+| Price vs 20-bar average | more than 5% above +10 · more than 5% below −10 · otherwise 0 |
+
+The detail card of every watchlist asset shows its exact score breakdown.
+
+Returns (7D/30D/90D/YTD) are close-to-close. If no candle exists close enough
+to the target date (for example, a newly listed coin), the app shows **N/A**
+instead of a misleading number.
+
 ## 🚀 Live Demo
 
 **[Open App](https://goodtrade.streamlit.app/)**
@@ -51,7 +82,7 @@ Add your favorite coins (BTC, ETH, SOL, etc.) and see which ones are in **Accumu
 ### 2. Single Asset Analysis
 Select a coin and click "Analyze" to see:
 - **Phase Zones**: Green shaded areas = Accumulation periods
-- **Wyckoff Phase**: Simple labels like "Smart Money Buying"
+- **Wyckoff Phase**: Accumulation, Markup, Distribution, Markdown or Ranging
 - **Entry Signals**: ⭐ markers when pattern + phase align
 
 Use **Chart Display → Bars shown on charts** (default: All history) to choose how
@@ -104,6 +135,19 @@ streamlit run app.py
 > **Note**: `ta-lib` 0.6+ ships self-contained wheels for common Linux, macOS and
 > Windows/Python combinations, bundling the TA-Lib C library. No system package
 > or compiler is needed. Only unusual platforms require a source build.
+
+## 🧪 Tests
+
+The calculations (returns, phases, pivots, scores, symbol mapping, caching) are
+covered by an offline test suite — no API keys or network access needed:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The GitHub Actions workflow runs the tests on every push and pull request; the
+GHCR image is only built and published when they pass.
 
 ## ☁️ Deploy to Streamlit Cloud
 

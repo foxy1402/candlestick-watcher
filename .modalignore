@@ -13,8 +13,15 @@ __pycache__
 *.pyc
 .ruff_cache
 .venv
+.venv-*
 venv
 env
+
+# Tests are not needed at runtime
+tests
+pytest.ini
+requirements-dev.txt
+.pytest_cache
 
 # Local data dumps (gitignored, may exist on a dev machine)
 data
